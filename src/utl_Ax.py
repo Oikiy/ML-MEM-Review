@@ -60,6 +60,327 @@ def scalar_objective(pwp_norm: float, rej_norm: float, weight_dict: dict) -> flo
         + weight_dict["solute1Rejection"] * rej_norm
     )
 
+
+def _normalize_optimization_mode(optimization_mode: str) -> str:
+    mode = optimization_mode.strip().lower()
+    if mode not in {"scalarized", "multiobjective"}:
+        raise ValueError(
+            "optimization_mode must be 'scalarized' or 'multiobjective', "
+            f"got {optimization_mode}"
+        )
+    return mode
+
+
+def _build_optimization_config(optimization_mode: str, objective_name: str) -> dict:
+    mode = _normalize_optimization_mode(optimization_mode)
+    if mode == "scalarized":
+        return {"objective": objective_name}
+    return {"objective": "normPureWaterPermeability,solute1Rejection"}
+
+
+def _build_multiobjective_thresholds(objective_thresholds=None):
+    # Provide explicit thresholds to avoid Ax inferring unstable defaults across runs.
+    if objective_thresholds is None:
+        return [
+            "normPureWaterPermeability>=0.0",
+            "solute1Rejection>=0.0",
+        ]
+    return list(objective_thresholds)
+
+
+def prepare_objective_history(
+    trial_df: pd.DataFrame,
+    objective_names,
+    minimize_metrics=None,
+    trial_index_column: str = "trial_index",
+    aggregate_name: str = "objective_sum",
+) -> pd.DataFrame:
+    history = trial_df.loc[:, list(objective_names)].copy()
+    minimize_metrics = set(minimize_metrics or [])
+
+    for objective_name in objective_names:
+        series = pd.to_numeric(history[objective_name], errors="coerce")
+        if objective_name in minimize_metrics:
+            series = -series
+        history[objective_name] = series
+
+    if trial_index_column in trial_df.columns:
+        history[trial_index_column] = pd.to_numeric(
+            trial_df[trial_index_column], errors="coerce"
+        )
+    else:
+        history[trial_index_column] = range(len(history))
+
+    history[aggregate_name] = history.loc[:, list(objective_names)].sum(axis=1)
+    return history
+
+
+def plot_objective_evolution(
+    history_df: pd.DataFrame,
+    objective_names,
+    trial_index_column: str = "trial_index",
+    aggregate_name: str = "objective_sum",
+    xtick_step: int = 10,
+    output_dir: str | None = None,
+    aggregate_title: str = "Evolution of Sum of Objective Values",
+):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    trial_indices = history_df[trial_index_column].tolist()
+    figures = {}
+
+    for objective_name in objective_names:
+        objective_values = pd.to_numeric(history_df[objective_name], errors="coerce")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(trial_indices, objective_values, marker="o", linestyle="-")
+        ax.set_title(f"Evolution of Objective Value Over Trials on {objective_name}")
+        ax.set_xlabel("Trial Index")
+        ax.set_ylabel("Objective Value")
+        if trial_indices:
+            ax.set_xticks(np.arange(min(trial_indices), max(trial_indices) + 5, xtick_step))
+            ax.set_xlim(0, max(trial_indices) + 5)
+        if output_dir is not None:
+            fig.savefig(
+                os.path.join(output_dir, f"{objective_name}_evolution.png"),
+                dpi=300,
+                bbox_inches="tight",
+            )
+        figures[objective_name] = fig
+
+    aggregate_values = pd.to_numeric(history_df[aggregate_name], errors="coerce")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(trial_indices, aggregate_values, marker="o", linestyle="-")
+    for index in range(1, len(trial_indices)):
+        color = "green" if aggregate_values.iloc[index] < aggregate_values.iloc[index - 1] else "red"
+        ax.arrow(
+            trial_indices[index - 1],
+            aggregate_values.iloc[index - 1],
+            trial_indices[index] - trial_indices[index - 1],
+            aggregate_values.iloc[index] - aggregate_values.iloc[index - 1],
+            head_width=0.5,
+            head_length=0.01,
+            fc=color,
+            ec=color,
+            length_includes_head=True,
+        )
+    ax.set_title(aggregate_title)
+    ax.set_xlabel("Trial Index")
+    ax.set_ylabel("Sum of Objective Values")
+    if trial_indices:
+        ax.set_xlim(0, max(trial_indices) + 5)
+    if output_dir is not None:
+        fig.savefig(
+            os.path.join(output_dir, f"{aggregate_name}_evolution.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+    figures[aggregate_name] = fig
+    return figures
+
+
+def build_frontier_dataframe(client, use_model_predictions: bool = False) -> pd.DataFrame:
+    try:
+        frontier = client.get_pareto_frontier(use_model_predictions=use_model_predictions)
+    except TypeError:
+        frontier = client.get_pareto_frontier()
+
+    rows = []
+    for item in frontier:
+        if isinstance(item, tuple):
+            params = item[0] if len(item) > 0 else {}
+            metrics = item[1] if len(item) > 1 else {}
+        elif isinstance(item, dict):
+            params = item.get("parameterization") or item.get("parameters") or item.get("params") or {}
+            metrics = item.get("metrics") or item.get("means") or {}
+        else:
+            continue
+
+        flattened_metrics = {}
+        for key, value in metrics.items():
+            if isinstance(value, (tuple, list)) and len(value) >= 1:
+                flattened_metrics[key] = value[0]
+            else:
+                flattened_metrics[key] = value
+        rows.append({**params, **flattened_metrics})
+
+    return pd.DataFrame(rows)
+
+
+def build_rbf_surface(
+    data: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    grid_size: int = 100,
+    smoothing: float = 0.0001,
+    kernel: str = "thin_plate_spline",
+    y_padding: float = 0.0,
+) -> dict:
+    import numpy as np
+    from scipy.interpolate import RBFInterpolator
+
+    clean = data.dropna(subset=[x_col, y_col, z_col]).copy()
+    x = clean[x_col].to_numpy(dtype=float)
+    y = clean[y_col].to_numpy(dtype=float)
+    z = clean[z_col].to_numpy(dtype=float)
+
+    x_min, x_max = float(np.min(x)), float(np.max(x))
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    xi = np.linspace(x_min, x_max, grid_size)
+    yi = np.linspace(y_min - y_padding, y_max, grid_size)
+    X, Y = np.meshgrid(xi, yi)
+
+    points = np.column_stack((x, y))
+    interpolator = RBFInterpolator(points, z, kernel=kernel, smoothing=smoothing)
+    grid_points = np.column_stack((X.ravel(), Y.ravel()))
+    Z = interpolator(grid_points).reshape(X.shape)
+
+    return {
+        "data": clean,
+        "x": x,
+        "y": y,
+        "z": z,
+        "points": points,
+        "rbf": interpolator,
+        "X": X,
+        "Y": Y,
+        "Z": Z,
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
+
+
+def _darker_color(color, factor: float = 0.6):
+    import numpy as np
+    from matplotlib.colors import to_rgb
+
+    return tuple(np.clip(np.array(to_rgb(color)) * factor, 0, 1))
+
+
+def plot_inverse_design_surface(
+    surface_data: dict,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    frontier_df: pd.DataFrame | None = None,
+    cmap="viridis",
+    trial_color: str = "r",
+    frontier_color: str = "b",
+    marker_size: int = 100,
+    elev: float = 30,
+    azim: float = -45,
+    y_padding: float = 0.0,
+):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(
+        surface_data["x"],
+        surface_data["y"],
+        surface_data["z"],
+        c=trial_color,
+        marker="o",
+        label="Trials",
+        edgecolors=[_darker_color(trial_color)],
+        linewidths=0.9,
+    )
+
+    if frontier_df is not None and not frontier_df.empty:
+        frontier_clean = frontier_df.dropna(subset=[x_col, y_col]).copy()
+        if z_col not in frontier_clean.columns:
+            frontier_points = frontier_clean[[x_col, y_col]].to_numpy(dtype=float)
+            frontier_clean[z_col] = np.asarray(surface_data["rbf"](frontier_points)).reshape(-1)
+        else:
+            frontier_clean = frontier_clean.dropna(subset=[z_col])
+        ax.scatter(
+            frontier_clean[x_col],
+            frontier_clean[y_col],
+            frontier_clean[z_col],
+            c=frontier_color,
+            marker="^",
+            s=marker_size,
+            label="Pareto Frontier",
+            edgecolors=[_darker_color(frontier_color)],
+            linewidths=0.9,
+        )
+
+    surf = ax.plot_surface(
+        surface_data["X"],
+        surface_data["Y"],
+        surface_data["Z"],
+        cmap=cmap,
+        edgecolor="none",
+        alpha=0.8,
+        rstride=1,
+        cstride=1,
+        shade=True,
+        antialiased=True,
+    )
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_zlabel(z_col)
+    ax.set_xlim([surface_data["x_min"], surface_data["x_max"]])
+    ax.set_ylim([surface_data["y_min"] - y_padding, surface_data["y_max"]])
+    ax.set_zlim([float(surface_data["z"].min()), float(surface_data["z"].max())])
+    ax.view_init(elev=elev, azim=azim)
+    ax.legend(loc="upper left", fontsize=12)
+    fig.colorbar(surf, ax=ax, shrink=0.5, pad=0.12, aspect=10, label=z_col)
+    return fig, ax
+
+
+def plot_inverse_design_contour(
+    surface_data: dict,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    frontier_df: pd.DataFrame | None = None,
+    cmap="viridis",
+    trial_color: str = "r",
+    frontier_color: str = "b",
+    marker_size: int = 20,
+    y_padding: float = 0.0,
+):
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    contour = ax.contourf(surface_data["X"], surface_data["Y"], surface_data["Z"], levels=50, cmap=cmap)
+    fig.colorbar(contour, label=z_col)
+    ax.scatter(
+        surface_data["x"],
+        surface_data["y"],
+        c=trial_color,
+        marker="o",
+        s=marker_size,
+        label="Trials",
+        edgecolors=[_darker_color(trial_color)],
+        linewidths=0.9,
+    )
+
+    if frontier_df is not None and not frontier_df.empty:
+        frontier_clean = frontier_df.dropna(subset=[x_col, y_col])
+        ax.scatter(
+            frontier_clean[x_col],
+            frontier_clean[y_col],
+            c=frontier_color,
+            marker="^",
+            s=marker_size,
+            label="Pareto Frontier",
+            edgecolors=[_darker_color(frontier_color)],
+            linewidths=0.9,
+        )
+
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_xlim([surface_data["x_min"], surface_data["x_max"]])
+    ax.set_ylim([surface_data["y_min"] - y_padding, surface_data["y_max"]])
+    ax.legend(loc="upper left", fontsize=12)
+    return fig, ax
+
 def oracle_from_params(
     params: dict,
     constant_params:dict,
@@ -68,8 +389,11 @@ def oracle_from_params(
     weight_dict: dict,
     cation_path:str,
     anion_path:str,
+    optimization_mode: str = "scalarized",
     
 ) -> dict:
+    mode = _normalize_optimization_mode(optimization_mode)
+
     # 1) Defaults for missing recipe/test variables (Constant or not included in search space).
     # Merge Ax parameters with defaults (Ax parameters override defaults).
     combined = {**constant_params, **params}
@@ -154,11 +478,15 @@ def oracle_from_params(
     rej_norm = normalize(rej_pred, norm_dict, "solute1Rejection")
     scalar = scalar_objective(pwp_norm, rej_norm, weight_dict)
 
-    return {
+    metrics = {
         "normPureWaterPermeability": pwp_norm,
         "solute1Rejection": rej_norm,
-        "scalarizedobjective": scalar,
     }
+
+    if mode == "scalarized":
+        metrics["scalarizedobjective"] = scalar
+
+    return metrics
 
 def run_ax_optimization(
     search_space_parameters,
@@ -168,9 +496,11 @@ def run_ax_optimization(
     weight_dict,
     cation_path,
     anion_path,
+    optimization_mode="scalarized",
     experiment_name="NF_Inverse_Design_Tutorial",
     experiment_description="Toy inverse design of NF IP membrane recipe",
     objective_name="scalarizedobjective",
+    objective_thresholds=None,
     sobol_init=5,
     n_trials=20,
     trial_error=0.01,
@@ -178,15 +508,21 @@ def run_ax_optimization(
 ):
     client = Client()
 
+    optimization_config = _build_optimization_config(optimization_mode, objective_name)
+    if _normalize_optimization_mode(optimization_mode) == "multiobjective":
+        # Ax client versions in this project accept outcome_constraints but not
+        # objective_thresholds in configure_optimization.
+        optimization_config["outcome_constraints"] = _build_multiobjective_thresholds(
+            objective_thresholds
+        )
+
     client.configure_experiment(
         parameters=search_space_parameters,
         name=experiment_name,
         description=experiment_description,
     )
 
-    client.configure_optimization(
-        objective=objective_name,
-    )
+    client.configure_optimization(**optimization_config)
 
     client.configure_generation_strategy(
         method="fast",
@@ -217,6 +553,7 @@ def run_ax_optimization(
                     weight_dict=weight_dict,
                     cation_path=cation_path,
                     anion_path=anion_path,
+                    optimization_mode=optimization_mode,
                 )
 
                 metrics = {k: (float(v), trial_error) for k, v in metrics_raw.items()}
