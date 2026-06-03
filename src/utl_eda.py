@@ -154,7 +154,7 @@ def plot_target_distributions(
             spine = ax.spines[spine_name]
             spine.set_linewidth(2)
             spine.set_edgecolor(edge_color)
-
+    
     return fig, axes
 
 

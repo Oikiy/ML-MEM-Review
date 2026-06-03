@@ -52,6 +52,10 @@ def shap_explain_target(
         SHAP values for the sampled background set.
     feature_names : list of str
         Names of the transformed features used in the SHAP plots.
+    summary_fig : matplotlib.figure.Figure
+        SHAP beeswarm summary figure.
+    bar_fig : matplotlib.figure.Figure
+        SHAP mean absolute contribution bar figure.
     """
     print(f"\n=== SHAP interpretation for target: {target} ===")
 
@@ -107,9 +111,9 @@ def shap_explain_target(
         cmap=custom_cmap,  # use the same custom colormap for consistency
         plot_size=FIG_SIZE,
     )
-    fig = plt.gcf()
-    fig.set_size_inches(*FIG_SIZE)
-    fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
+    summary_fig = plt.gcf()
+    summary_fig.set_size_inches(*FIG_SIZE)
+    summary_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
     plt.title(f"SHAP summary:{target}", fontsize=FONT_SIZE, fontweight='bold')
     ax = plt.gca()
     ax.grid(False)
@@ -130,9 +134,9 @@ def shap_explain_target(
         plot_size=FIG_SIZE,
         color="#7FAFD9",
     )
-    fig = plt.gcf()
-    fig.set_size_inches(*FIG_SIZE)
-    fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
+    bar_fig = plt.gcf()
+    bar_fig.set_size_inches(*FIG_SIZE)
+    bar_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
     ax = plt.gca()
     ax.grid(False)
     for patch in ax.patches:
@@ -145,4 +149,4 @@ def shap_explain_target(
     plt.title(f"SHAP feature importance : {target}", fontsize=FONT_SIZE, fontweight='bold')
     plt.show()
 
-    return shap_values, feature_names
+    return shap_values, feature_names, summary_fig, bar_fig

@@ -59,7 +59,7 @@ def _build_feature_table(df_raw: pd.DataFrame, base_features: list, target: str,
     print(f"Final feature count: {X.shape[1]}")
     return X, y
 
-def regression_metrics(y_true, y_pred, label=""):
+def regression_metrics(y_true, y_pred, label="", verbose: bool = True):
     """
     Compute and print standard regression metrics.
 
@@ -71,14 +71,17 @@ def regression_metrics(y_true, y_pred, label=""):
         Predicted target values.
     label : str, optional
         Label indicating which split ('Train' or 'Test') the metrics belong to.
+    verbose : bool, optional
+        If True, print metrics. If False, return metrics silently.
     """
     r2 = r2_score(y_true, y_pred)
     mse = mean_squared_error(y_true, y_pred)
     rmse = np.sqrt(mse)
     mae = mean_absolute_error(y_true, y_pred)
-    print(f"{label} R²   = {r2:.4f}")
-    print(f"{label} RMSE = {rmse:.4f}")
-    print(f"{label} MAE  = {mae:.4f}")
+    if verbose:
+        print(f"{label} R²   = {r2:.4f}")
+        print(f"{label} RMSE = {rmse:.4f}")
+        print(f"{label} MAE  = {mae:.4f}")
     return r2, rmse, mae
 
 def train_and_save_extratrees_model(
@@ -93,6 +96,7 @@ def train_and_save_extratrees_model(
     n_splits=5,
     use_hyperparam_tuning=False,
     n_iter_search=20,
+    force_retrain=False,
 ):
     """
     Build features, train an ExtraTreesRegressor in a sklearn Pipeline,
@@ -125,6 +129,9 @@ def train_and_save_extratrees_model(
     n_iter_search : int, optional
         Number of parameter settings sampled in RandomizedSearchCV
         when use_hyperparam_tuning is True.
+    force_retrain : bool, optional
+        If True, retrain and overwrite an existing model at model_path.
+        If False (default), load existing model when present and skip retraining.
 
     Returns
     -------
@@ -140,6 +147,14 @@ def train_and_save_extratrees_model(
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state
     )
+
+    # Reuse existing model to avoid unnecessary retraining.
+    if os.path.exists(model_path) and not force_retrain:
+        print(f"\n=== Reusing existing model for target: {target} ===")
+        print(f"Loading model from: {model_path}")
+        pipe = joblib.load(model_path)
+
+        return pipe, X_train, X_test, y_train, y_test
 
     print(f"\n=== Training ExtraTrees model for target: {target} ===")
     print("Training samples:", X_train.shape[0], "using features:", X_train.columns.tolist())
@@ -274,8 +289,8 @@ def evaluate_and_plot_parity(
     plt.ylabel(f'Predictions', fontsize=FONT_SIZE) 
     plt.title(f'Parity Plot for {target}', fontsize=FONT_SIZE, fontweight='bold')
     
-    r2_train,rmse_train,_, = regression_metrics(y_train, y_pred_train, label="Train")  
-    r2_test,rmse_test,_, = regression_metrics(y_test, y_pred_test, label="Test")
+    r2_train,rmse_train,_, = regression_metrics(y_train, y_pred_train, label="Train", verbose=False)
+    r2_test,rmse_test,_, = regression_metrics(y_test, y_pred_test, label="Test", verbose=False)
     plt.annotate(f'R$^2$ (Train)={r2_train:.2f}\nRMSE (Train)={rmse_train:.2f}',
                 xy=(0.95, 0.12), xycoords='axes fraction', ha='right', va='top',
                 fontsize=FONT_SIZE, color="#7FAFD9")
