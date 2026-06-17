@@ -20,7 +20,7 @@ import pandas as pd
 def plot_target_distributions(
     df: pd.DataFrame,
     target_columns: Sequence[str],
-    figsize: Optional[Tuple[float, float]] = None,
+    fig_size: Optional[Tuple[float, float]] = None,
     colors: Optional[Sequence[str]] = None,
     violin_colors: Optional[Sequence[str]] = None,
     scatter_color: str = "#52687e",
@@ -39,8 +39,8 @@ def plot_target_distributions(
         Dataframe containing the target columns.
     target_columns : sequence of str
         Names of the columns in df to plot.
-    figsize : tuple, optional
-        Overall figure size; defaults to (6.5 * n_targets, 12).
+    fig_size : tuple, optional
+        Overall figure size.
     colors : sequence of str, optional
         Colors for the boxplots. Cycled if fewer than n_targets.
     violin_colors : sequence of str, optional
@@ -67,10 +67,10 @@ def plot_target_distributions(
     y_regression = df[target_columns]
 
     n_targets = len(y_regression.columns)
-    if figsize is None:
-        figsize = (6.5 * n_targets, 12)
+    if fig_size is None:
+        fig_size = (6.5 * n_targets, 12)
 
-    fig, axes = plt.subplots(1, n_targets, figsize=figsize)
+    fig, axes = plt.subplots(1, n_targets, figsize=fig_size)
     fig.subplots_adjust(wspace=0.35)
     axes = np.atleast_1d(axes).flatten()
 
@@ -158,7 +158,7 @@ def plot_target_distributions(
     return fig, axes
 
 
-def compute_and_plot_pearson_heatmap(df, threshold=0.5):
+def compute_and_plot_pearson_heatmap(df, threshold=0.5, fig_size=(12, 10)):
     """
     Compute pairwise Pearson correlations and plot heatmap with correlation threshold filtering.
     
@@ -171,6 +171,8 @@ def compute_and_plot_pearson_heatmap(df, threshold=0.5):
         Input dataframe with numerical features
     threshold : float, default=0.5
         Correlation threshold (0-1). Only correlations with absolute value > threshold are displayed
+    fig_size : tuple, default=(12, 10)
+        Figure size for the heatmap.
 
     Returns:
     --------
@@ -197,7 +199,7 @@ def compute_and_plot_pearson_heatmap(df, threshold=0.5):
             corr_matrix.at[col_j, col_i] = corr
     
     # Plot heatmap with threshold filtering
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=fig_size)
     hm = sns.heatmap(corr_matrix.where(corr_matrix.abs() > threshold), annot=True, fmt=".2f",
                      annot_kws={"size": 20}, cmap=custom_cmap, center=0, cbar_kws={"shrink": .8}, square=True,
                      linewidths=.5, linecolor='black', ax=ax)

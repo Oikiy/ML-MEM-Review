@@ -25,6 +25,7 @@ def shap_explain_target(
     MODEL_PATH,
     random_state=42,
     max_samples=1000,
+    fig_size=(20, 16),
  ):
     """
     Load a saved ExtraTrees pipeline for a given target, rebuild training-like
@@ -45,6 +46,8 @@ def shap_explain_target(
         Random seed for train/test split used to construct SHAP background data.
     max_samples : int, optional
         Maximum number of samples to use for SHAP (subsampled if larger).
+    fig_size : tuple, optional
+        Figure size for SHAP summary and bar plots.
 
     Returns
     -------
@@ -109,10 +112,10 @@ def shap_explain_target(
         feature_names=feature_names,
         show=False,
         cmap=custom_cmap,  # use the same custom colormap for consistency
-        plot_size=FIG_SIZE,
+        plot_size=fig_size,
     )
     summary_fig = plt.gcf()
-    summary_fig.set_size_inches(*FIG_SIZE)
+    summary_fig.set_size_inches(*fig_size)
     summary_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
     plt.title(f"SHAP summary:{target}", fontsize=FONT_SIZE, fontweight='bold')
     ax = plt.gca()
@@ -131,11 +134,11 @@ def shap_explain_target(
         feature_names=feature_names,
         plot_type="bar",
         show=False,
-        plot_size=FIG_SIZE,
+        plot_size=fig_size,
         color="#7FAFD9",
     )
     bar_fig = plt.gcf()
-    bar_fig.set_size_inches(*FIG_SIZE)
+    bar_fig.set_size_inches(*fig_size)
     bar_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
     ax = plt.gca()
     ax.grid(False)

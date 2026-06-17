@@ -222,6 +222,7 @@ def run_ax_optimization(
     load_client=False,
     force_rebuild=False,
     save_every_trials=None,
+    return_trial_df: bool = False,
 ):
     if save_every_trials is not None:
         if not isinstance(save_every_trials, int) or save_every_trials <= 0:
@@ -232,7 +233,12 @@ def run_ax_optimization(
             print(f"Loading saved Ax client from: {client_path}")
         saved_payload = file_io("load", "joblib", os.path.dirname(client_path), os.path.basename(client_path))
         if isinstance(saved_payload, dict) and "client" in saved_payload:
-            return saved_payload["client"], saved_payload.get("results", [])
+            loaded_client = saved_payload["client"]
+            loaded_results = saved_payload.get("results", [])
+            if return_trial_df:
+                loaded_trial_df = results_to_dataframe(loaded_results)
+                return loaded_client, loaded_results, loaded_trial_df
+            return loaded_client, loaded_results
 
     client = Client()
 
@@ -325,7 +331,72 @@ def run_ax_optimization(
         if verbose:
             print(f"Saved Ax client to: {client_path}")
 
+    if return_trial_df:
+        trial_df = results_to_dataframe(results)
+        return client, results, trial_df
+
     return client, results
+
+def results_to_dataframe(
+    results: list[dict],
+    include_params: bool = True,
+    include_metrics_raw: bool = True,
+    include_metrics_with_sem: bool = False,
+) -> pd.DataFrame:
+    """
+    Convert Ax optimization results into a flat DataFrame with one row per trial.
+
+    Parameters
+    ----------
+    results : list of dict
+        The `results` object returned by `run_ax_optimization`.
+    include_params : bool, optional
+        Whether to expand the parameter dictionary into columns.
+    include_metrics_raw : bool, optional
+        Whether to expand raw metric means (from `metrics_raw`) into columns.
+    include_metrics_with_sem : bool, optional
+        Whether to also expand SEM-aware Ax metric payloads from `metrics`
+        into paired columns: `<metric>_mean` and `<metric>_sem`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Flat table with one row per completed trial.
+    """
+    rows = []
+
+    for item in results:
+        row = {
+            "trial_index": item.get("trial_index"),
+        }
+
+        if include_params:
+            params = item.get("params", {}) or {}
+            row.update(params)
+
+        if include_metrics_raw:
+            metrics_raw = item.get("metrics_raw", {}) or {}
+            for key, value in metrics_raw.items():
+                row[key] = value
+
+        if include_metrics_with_sem:
+            metrics = item.get("metrics", {}) or {}
+            for key, value in metrics.items():
+                if isinstance(value, (tuple, list)) and len(value) >= 2:
+                    row[f"{key}_mean"] = value[0]
+                    row[f"{key}_sem"] = value[1]
+                else:
+                    row[f"{key}_mean"] = value
+                    row[f"{key}_sem"] = float("nan")
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    if "trial_index" in df.columns:
+        df["trial_index"] = pd.to_numeric(df["trial_index"], errors="coerce")
+
+    return df
 
 def _as_mean_sem(value):
     """Normalize Ax metric payloads into a (mean, sem) tuple."""
@@ -453,6 +524,7 @@ def prepare_objective_history(
     minimize_metrics=None,
     trial_index_column: str = "trial_index",
     aggregate_name: str = "objective_sum",
+    objective_weights=None,
 ) -> pd.DataFrame:
     history = trial_df.loc[:, list(objective_names)].copy()
     minimize_metrics = set(minimize_metrics or [])
@@ -470,7 +542,13 @@ def prepare_objective_history(
     else:
         history[trial_index_column] = range(len(history))
 
-    history[aggregate_name] = history.loc[:, list(objective_names)].sum(axis=1)
+    if objective_weights is not None:
+        history[aggregate_name] = sum(
+            history[col] * float(objective_weights.get(col, 1.0))
+            for col in objective_names
+        )
+    else:
+        history[aggregate_name] = history.loc[:, list(objective_names)].sum(axis=1)
     return history
 
 
@@ -482,6 +560,7 @@ def plot_objective_evolution(
     xtick_step: int = 10,
     output_dir: str | None = None,
     aggregate_title: str = "Evolution of Sum of Objective Values",
+    fig_size=(10, 6),
 ):
     import matplotlib.pyplot as plt
     import numpy as np
@@ -491,7 +570,7 @@ def plot_objective_evolution(
 
     for objective_name in objective_names:
         objective_values = pd.to_numeric(history_df[objective_name], errors="coerce")
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=fig_size)
         ax.plot(trial_indices, objective_values, marker="o", linestyle="-")
         ax.set_title(f"Evolution of Objective Value Over Trials on {objective_name}")
         ax.set_xlabel("Trial Index")
@@ -508,7 +587,7 @@ def plot_objective_evolution(
         figures[objective_name] = fig
 
     aggregate_values = pd.to_numeric(history_df[aggregate_name], errors="coerce")
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=fig_size)
     ax.plot(trial_indices, aggregate_values, marker="o", linestyle="-")
     for index in range(1, len(trial_indices)):
         color = "green" if aggregate_values.iloc[index] < aggregate_values.iloc[index - 1] else "red"
@@ -548,6 +627,7 @@ def summarize_inverse_design_metrics_evolution(
     aggregate_display_name: str = "Sum of Objectives",
     y_positions=None,
     output_dir: str | None = None,
+    fig_size=None,
     figure_size=(12, 8),
     elev: float = 15,
     azim: float = -60,
@@ -558,6 +638,7 @@ def summarize_inverse_design_metrics_evolution(
     marker_size: float = 3,
     title: str = "Inverse Design Metrics Evolution",
     save_name: str = "inverse_design_metrics_evolution.png",
+    objective_weights=None,
 ):
     import matplotlib.pyplot as plt
     import numpy as np
@@ -571,6 +652,7 @@ def summarize_inverse_design_metrics_evolution(
         minimize_metrics=minimize_metrics,
         trial_index_column=trial_index_column,
         aggregate_name=aggregate_name,
+        objective_weights=objective_weights,
     )
 
     objective_names = list(objective_names)
@@ -607,6 +689,9 @@ def summarize_inverse_design_metrics_evolution(
         for column_name in plot_columns
     ]
     max_label_lines = max(label.count("\n") + 1 for label in wrapped_plot_columns)
+
+    if fig_size is not None:
+        figure_size = fig_size
 
     default_figure_size = (12, 8)
     if tuple(figure_size) == default_figure_size:
@@ -891,14 +976,10 @@ def build_frontier_dataframe(client, use_model_predictions: bool = False) -> pd.
 
     rows = []
     for item in frontier:
-        if isinstance(item, tuple):
-            params = item[0] if len(item) > 0 else {}
-            metrics = item[1] if len(item) > 1 else {}
-        elif isinstance(item, dict):
-            params = item.get("parameterization") or item.get("parameters") or item.get("params") or {}
-            metrics = item.get("metrics") or item.get("means") or {}
-        else:
+        if not isinstance(item, (tuple, dict)):
             continue
+
+        params, metrics, _ = _normalize_frontier_item(item)
 
         flattened_metrics = {}
         for key, value in metrics.items():
@@ -910,6 +991,359 @@ def build_frontier_dataframe(client, use_model_predictions: bool = False) -> pd.
 
     return pd.DataFrame(rows)
 
+def _prepare_objective_frame(
+    df: pd.DataFrame,
+    objective_names,
+    minimize_metrics=None,
+) -> pd.DataFrame:
+    """
+    Return a copy of the objective columns where all objectives are oriented
+    so that larger values are better.
+    """
+    objective_names = list(objective_names)
+    minimize_metrics = set(minimize_metrics or [])
+
+    missing = [col for col in objective_names if col not in df.columns]
+    if missing:
+        raise KeyError(f"Missing objective columns: {missing}")
+
+    out = df.copy()
+    for col in objective_names:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+        if col in minimize_metrics:
+            out[col] = -out[col]
+    return out
+
+
+def _pareto_efficient_mask(
+    values: pd.DataFrame | list | tuple,
+) -> pd.Series:
+    """
+    Compute Pareto-efficient mask for a 2D numeric table where larger is better
+    for every objective.
+    """
+    import numpy as np
+
+    if isinstance(values, pd.DataFrame):
+        arr = values.to_numpy(dtype=float)
+        index = values.index
+    else:
+        arr = np.asarray(values, dtype=float)
+        index = pd.RangeIndex(len(arr))
+
+    n = arr.shape[0]
+    is_efficient = np.ones(n, dtype=bool)
+
+    for i in range(n):
+        if not is_efficient[i]:
+            continue
+
+        candidate = arr[i]
+        active = np.where(is_efficient)[0]
+        active_points = arr[active]
+
+        dominates_candidate = np.all(active_points >= candidate, axis=1) & np.any(active_points > candidate, axis=1)
+        if np.any(dominates_candidate):
+            is_efficient[i] = False
+            continue
+
+        candidate_dominates = np.all(candidate >= active_points, axis=1) & np.any(candidate > active_points, axis=1)
+        dominated_indices = active[candidate_dominates]
+        is_efficient[dominated_indices] = False
+        is_efficient[i] = True
+
+    return pd.Series(is_efficient, index=index)
+
+
+def plot_pareto_scatter_2d(
+    trial_df: pd.DataFrame,
+    objective_names,
+    minimize_metrics=None,
+    display_names=None,
+    frontier_df: pd.DataFrame | None = None,
+    color_by: str | None = "trial_index",
+    cmap: str = "viridis",
+    trial_color: str = "#BDBDBD",
+    frontier_color: str = "#D62728",
+    marker_size: int = 45,
+    frontier_marker_size: int = 90,
+    alpha: float = 0.8,
+    annotate_frontier: bool = False,
+    output_path: str | None = None,
+    fig_size=(8, 6),
+):
+    """
+    Plot a true 2-objective Pareto scatter from trial_df. If frontier_df is not
+    provided, the Pareto frontier is computed directly from trial_df.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    objective_names = list(objective_names)
+    if len(objective_names) != 2:
+        raise ValueError("plot_pareto_scatter_2d requires exactly 2 objective names")
+
+    x_col, y_col = objective_names
+    display_names = list(display_names) if display_names is not None else [x_col, y_col]
+
+    oriented_df = _prepare_objective_frame(
+        trial_df,
+        objective_names=objective_names,
+        minimize_metrics=minimize_metrics,
+    ).copy()
+
+    plot_df = oriented_df.dropna(subset=[x_col, y_col]).copy()
+
+    if frontier_df is not None and not frontier_df.empty:
+        frontier_oriented = _prepare_objective_frame(
+            frontier_df,
+            objective_names=objective_names,
+            minimize_metrics=minimize_metrics,
+        ).dropna(subset=[x_col, y_col]).copy()
+        frontier_plot_df = frontier_oriented
+    else:
+        mask = _pareto_efficient_mask(plot_df[[x_col, y_col]])
+        frontier_plot_df = plot_df.loc[mask].copy()
+
+    frontier_plot_df = frontier_plot_df.sort_values(by=[x_col, y_col])
+
+    fig, ax = plt.subplots(figsize=fig_size)
+
+    if color_by is not None and color_by in plot_df.columns:
+        scatter = ax.scatter(
+            plot_df[x_col],
+            plot_df[y_col],
+            c=pd.to_numeric(plot_df[color_by], errors="coerce"),
+            cmap=cmap,
+            s=marker_size,
+            alpha=alpha,
+            edgecolors="white",
+            linewidths=0.6,
+            label="Trials",
+        )
+        cbar = fig.colorbar(scatter, ax=ax)
+        cbar.set_label(color_by)
+    else:
+        ax.scatter(
+            plot_df[x_col],
+            plot_df[y_col],
+            c=trial_color,
+            s=marker_size,
+            alpha=alpha,
+            edgecolors="white",
+            linewidths=0.6,
+            label="Trials",
+        )
+
+    ax.plot(
+        frontier_plot_df[x_col],
+        frontier_plot_df[y_col],
+        color=frontier_color,
+        linewidth=1.5,
+        alpha=0.9,
+        zorder=4,
+    )
+
+    ax.scatter(
+        frontier_plot_df[x_col],
+        frontier_plot_df[y_col],
+        c=frontier_color,
+        s=frontier_marker_size,
+        marker="^",
+        edgecolors=[_darker_color(frontier_color)],
+        linewidths=0.9,
+        label="Pareto Frontier",
+        zorder=5,
+    )
+
+    if annotate_frontier and "trial_index" in frontier_plot_df.columns:
+        for _, row in frontier_plot_df.iterrows():
+            ax.annotate(
+                str(int(row["trial_index"])) if pd.notna(row["trial_index"]) else "",
+                (row[x_col], row[y_col]),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=9,
+            )
+
+    ax.set_xlabel(display_names[0])
+    ax.set_ylabel(display_names[1])
+    ax.set_title("Pareto Scatter Plot")
+    ax.legend(loc="best", fontsize=11)
+    ax.grid(True, alpha=0.25)
+
+    if output_path is not None:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+
+    return {
+        "figure": fig,
+        "axes": ax,
+        "trial_df_oriented": plot_df,
+        "frontier_df_oriented": frontier_plot_df,
+    }
+
+
+def plot_parallel_coordinates_plotly(
+    trial_df: pd.DataFrame,
+    objective_names,
+    minimize_metrics=None,
+    color_by: str | None = None,
+    highlight_pareto: bool = True,
+    frontier_df: pd.DataFrame | None = None,
+    title: str = "Parallel Coordinates of Objective Values",
+    normalize: bool = True,
+):
+    """
+    Create an interactive Plotly parallel-coordinates plot for >3 objectives.
+    All objectives are oriented so that larger values are better.
+    """
+    objective_names = list(objective_names)
+    if len(objective_names) < 4:
+        raise ValueError("plot_parallel_coordinates_plotly is intended for 4 or more objectives")
+
+    try:
+        import plotly.express as px
+    except ImportError as exc:
+        raise ImportError(
+            "Plotly is required for plot_parallel_coordinates_plotly. "
+            "Install plotly first."
+        ) from exc
+
+    plot_df = _prepare_objective_frame(
+        trial_df,
+        objective_names=objective_names,
+        minimize_metrics=minimize_metrics,
+    ).copy()
+
+    plot_df = plot_df.dropna(subset=objective_names).copy()
+
+    if normalize:
+        for col in objective_names:
+            col_min = plot_df[col].min()
+            col_max = plot_df[col].max()
+            if pd.notna(col_min) and pd.notna(col_max) and col_max > col_min:
+                plot_df[col] = (plot_df[col] - col_min) / (col_max - col_min)
+            else:
+                plot_df[col] = 0.0
+
+    if highlight_pareto:
+        if frontier_df is not None and not frontier_df.empty:
+            frontier_oriented = _prepare_objective_frame(
+                frontier_df,
+                objective_names=objective_names,
+                minimize_metrics=minimize_metrics,
+            ).dropna(subset=objective_names).copy()
+
+            if normalize:
+                for col in objective_names:
+                    ref_min = plot_df[col].min()
+                    ref_max = plot_df[col].max()
+                    original = frontier_oriented[col]
+                    if pd.notna(ref_min) and pd.notna(ref_max) and ref_max > ref_min:
+                        frontier_oriented[col] = (original - original.min()) / (original.max() - original.min()) if original.max() > original.min() else 0.0
+
+            frontier_keys = set(map(tuple, frontier_oriented[objective_names].round(10).to_numpy()))
+            plot_df["is_pareto"] = [
+                tuple(row.round(10)) in frontier_keys
+                for row in plot_df[objective_names].to_numpy()
+            ]
+        else:
+            mask = _pareto_efficient_mask(plot_df[objective_names])
+            plot_df["is_pareto"] = mask.to_numpy()
+    else:
+        plot_df["is_pareto"] = False
+
+    if color_by is not None and color_by in plot_df.columns:
+        color_series = pd.to_numeric(plot_df[color_by], errors="coerce")
+    else:
+        color_series = plot_df["is_pareto"].astype(int)
+
+    fig = px.parallel_coordinates(
+        plot_df,
+        dimensions=objective_names,
+        color=color_series,
+        color_continuous_scale="Viridis",
+        title=title,
+    )
+
+    return {
+        "figure": fig,
+        "plot_df": plot_df,
+    }
+
+
+def plot_objective_response_maps(
+    trial_df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    frontier_df: pd.DataFrame | None = None,
+    grid_size: int = 100,
+    smoothing: float = 0.0001,
+    kernel: str = "thin_plate_spline",
+    y_padding: float = 0.0,
+    surface_cmap: str = "viridis",
+    contour_cmap: str = "viridis",
+    trial_color: str = "r",
+    frontier_color: str = "b",
+    surface_marker_size: int = 100,
+    contour_marker_size: int = 20,
+    elev: float = 30,
+    azim: float = -45,
+    fig_size=(10, 8),
+):
+    """
+    Reuse the existing RBF/surface/contour pipeline to visualize one objective
+    over two selected design variables, optionally overlaying Pareto points.
+    """
+    surface_data = build_rbf_surface(
+        data=trial_df,
+        x_col=x_col,
+        y_col=y_col,
+        z_col=z_col,
+        grid_size=grid_size,
+        smoothing=smoothing,
+        kernel=kernel,
+        y_padding=y_padding,
+    )
+
+    fig_surface, ax_surface = plot_inverse_design_surface(
+        surface_data=surface_data,
+        x_col=x_col,
+        y_col=y_col,
+        z_col=z_col,
+        frontier_df=frontier_df,
+        cmap=surface_cmap,
+        trial_color=trial_color,
+        frontier_color=frontier_color,
+        marker_size=surface_marker_size,
+        elev=elev,
+        azim=azim,
+        y_padding=y_padding,
+        fig_size=fig_size,
+    )
+
+    fig_contour, ax_contour = plot_inverse_design_contour(
+        surface_data=surface_data,
+        x_col=x_col,
+        y_col=y_col,
+        z_col=z_col,
+        frontier_df=frontier_df,
+        cmap=contour_cmap,
+        trial_color=trial_color,
+        frontier_color=frontier_color,
+        marker_size=contour_marker_size,
+        y_padding=y_padding,
+        fig_size=fig_size,
+    )
+
+    return {
+        "surface_data": surface_data,
+        "surface_figure": fig_surface,
+        "surface_axes": ax_surface,
+        "contour_figure": fig_contour,
+        "contour_axes": ax_contour,
+    }
 
 def build_rbf_surface(
     data: pd.DataFrame,
@@ -977,11 +1411,12 @@ def plot_inverse_design_surface(
     elev: float = 30,
     azim: float = -45,
     y_padding: float = 0.0,
+    fig_size=(10, 8),
 ):
     import matplotlib.pyplot as plt
     import numpy as np
 
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=fig_size)
     ax = fig.add_subplot(111, projection="3d")
     ax.scatter(
         surface_data["x"],
@@ -1048,10 +1483,11 @@ def plot_inverse_design_contour(
     frontier_color: str = "b",
     marker_size: int = 20,
     y_padding: float = 0.0,
+    fig_size=(10, 8),
 ):
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=fig_size)
     contour = ax.contourf(surface_data["X"], surface_data["Y"], surface_data["Z"], levels=50, cmap=cmap)
     fig.colorbar(contour, label=z_col)
     ax.scatter(
@@ -1066,7 +1502,17 @@ def plot_inverse_design_contour(
     )
 
     if frontier_df is not None and not frontier_df.empty:
-        frontier_clean = frontier_df.dropna(subset=[x_col, y_col])
+        frontier_clean = frontier_df.dropna(subset=[x_col, y_col]).sort_values(by=[x_col, y_col])
+        if len(frontier_clean) >= 2:
+            ax.plot(
+                frontier_clean[x_col],
+                frontier_clean[y_col],
+                color=frontier_color,
+                linestyle="-",
+                linewidth=1.8,
+                alpha=0.9,
+                zorder=3,
+            )
         ax.scatter(
             frontier_clean[x_col],
             frontier_clean[y_col],
@@ -1084,3 +1530,156 @@ def plot_inverse_design_contour(
     ax.set_ylim([surface_data["y_min"] - y_padding, surface_data["y_max"]])
     ax.legend(loc="upper left", fontsize=12)
     return fig, ax
+
+def plot_ax_results(
+    trial_df: pd.DataFrame,
+    objective_names,
+    optimization_mode: str = "scalarized",
+    minimize_metrics=None,
+    trial_index_column: str = "trial_index",
+    aggregate_name: str = "objective_sum",
+    aggregate_display_name: str = "Sum of Objectives",
+    display_names=None,
+    client=None,
+    use_model_predictions: bool = False,
+    output_dir: str | None = None,
+    xtick_step: int = 10,
+    fig_size=None,
+    figure_size=(12, 8),
+    title: str = "Inverse Design Metrics Evolution",
+    save_name: str = "inverse_design_metrics_evolution.png",
+    make_parallel_coordinates: bool = False,
+    parallel_coords_color_by: str | None = None,
+    response_map_specs: list[dict] | None = None,
+    objective_weights=None,
+):
+    """
+    Dispatch visualization of Ax optimization results based on objective count.
+
+    Parameters
+    ----------
+    response_map_specs : list of dict, optional
+        Each dict should contain at least:
+        {"x_col": ..., "y_col": ..., "z_col": ...}
+        and may also include optional kwargs for plot_objective_response_maps().
+    """
+    requested_objective_names = list(objective_names)
+    if fig_size is not None:
+        figure_size = fig_size
+    if aggregate_name in requested_objective_names:
+        objective_names = [name for name in requested_objective_names if name != aggregate_name]
+        if display_names is not None and len(display_names) == len(requested_objective_names):
+            display_names = [
+                name
+                for index, name in enumerate(display_names)
+                if requested_objective_names[index] != aggregate_name
+            ]
+    else:
+        objective_names = requested_objective_names
+
+    mode = _normalize_optimization_mode(optimization_mode)
+    n_objectives = len(objective_names)
+
+    if n_objectives == 0:
+        raise ValueError("objective_names must contain at least one objective column")
+
+    missing = [col for col in objective_names if col not in trial_df.columns]
+    if missing:
+        raise KeyError(f"Missing objective columns in trial_df: {missing}")
+
+    history_df = prepare_objective_history(
+        trial_df=trial_df,
+        objective_names=objective_names,
+        minimize_metrics=minimize_metrics,
+        trial_index_column=trial_index_column,
+        aggregate_name=aggregate_name,
+        objective_weights=objective_weights,
+    )
+
+    plot_trial_df = trial_df.copy()
+    if aggregate_name not in plot_trial_df.columns:
+        plot_trial_df[aggregate_name] = history_df[aggregate_name].values
+
+    output = {
+        "mode": mode,
+        "objective_names": objective_names,
+        "trial_df": plot_trial_df.copy(),
+        "history_df": history_df,
+        "figures": {},
+        "summary": None,
+        "frontier_df": None,
+        "pareto_scatter": None,
+        "parallel_coordinates": None,
+        "response_maps": [],
+    }
+
+    frontier_df = None
+    if mode == "multiobjective" and client is not None:
+        frontier_df = build_frontier_dataframe(
+            client,
+            use_model_predictions=use_model_predictions,
+        )
+        output["frontier_df"] = frontier_df
+
+    if n_objectives == 1:
+        figures = plot_objective_evolution(
+            history_df=history_df,
+            objective_names=objective_names,
+            trial_index_column=trial_index_column,
+            aggregate_name=aggregate_name,
+            xtick_step=xtick_step,
+            output_dir=output_dir,
+            aggregate_title=f"Evolution of {aggregate_display_name}",
+            fig_size=figure_size,
+        )
+        output["figures"].update(figures)
+
+    elif n_objectives >= 2:
+        summary = summarize_inverse_design_metrics_evolution(
+            trial_df=trial_df,
+            objective_names=objective_names,
+            display_names=display_names,
+            minimize_metrics=minimize_metrics,
+            trial_index_column=trial_index_column,
+            aggregate_name=aggregate_name,
+            aggregate_display_name=aggregate_display_name,
+            output_dir=output_dir,
+            fig_size=figure_size,
+            figure_size=figure_size,
+            title=title,
+            save_name=save_name,
+            objective_weights=objective_weights,
+        )
+        output["summary"] = summary
+        output["figures"]["summary_figure"] = summary["figure"]
+
+        if make_parallel_coordinates and n_objectives > 3:
+            parallel_coordinates = plot_parallel_coordinates_plotly(
+                trial_df=plot_trial_df,
+                objective_names=objective_names,
+                minimize_metrics=minimize_metrics,
+                color_by=parallel_coords_color_by,
+                highlight_pareto=True,
+                frontier_df=frontier_df,
+                title="Parallel Coordinates of Objective Values",
+            )
+            output["parallel_coordinates"] = parallel_coordinates
+
+    if response_map_specs:
+        for spec in response_map_specs:
+            spec = dict(spec)
+            x_col = spec.pop("x_col")
+            y_col = spec.pop("y_col")
+            z_col = spec.pop("z_col")
+
+            response_map = plot_objective_response_maps(
+                trial_df=plot_trial_df,
+                x_col=x_col,
+                y_col=y_col,
+                z_col=z_col,
+                frontier_df=frontier_df,
+                **spec,
+            )
+            output["response_maps"].append(response_map)
+
+    return output

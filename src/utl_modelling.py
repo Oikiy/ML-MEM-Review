@@ -259,6 +259,7 @@ def evaluate_and_plot_parity(
     y_pred_train,
     y_test,
     y_pred_test,
+    fig_size=(10, 8),
     metrics_fn=regression_metrics,
 ):
     """
@@ -273,6 +274,8 @@ def evaluate_and_plot_parity(
         True and predicted values for the training set.
     y_test, y_pred_test : array-like
         True and predicted values for the test set.
+    fig_size : tuple, optional
+        Figure size for the parity plot.
     metrics_fn : callable, optional
         Function to compute and print metrics, with signature
         metrics_fn(y_true, y_pred, label="").
@@ -281,7 +284,7 @@ def evaluate_and_plot_parity(
     metrics_fn(y_train, y_pred_train, label="Train")
     metrics_fn(y_test, y_pred_test, label="Test")
 
-    plt.figure(figsize=(10,8))
+    plt.figure(figsize=fig_size)
     plt.scatter(y_train, y_pred_train, label='Train Data', color='#8fbce3', alpha=0.6)
     plt.scatter(y_test, y_pred_test, label='Test Data', color='#e38f8f', marker='D')
     plt.plot([min(min(y_test),min(y_train)), max(max(y_test),max(y_train))], [min(min(y_test),min(y_train)), max(max(y_test),max(y_train))], '--', color='gray')
