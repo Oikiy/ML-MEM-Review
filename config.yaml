@@ -1,0 +1,187 @@
+# ML-MEM Membrane ML Workflow Configuration
+# This file contains all project-specific settings, paths, and processing parameters.
+# Values can be overridden at runtime or by setting environment variables.
+
+project:
+  # Project structure paths (relative to project root)
+  name: "ML-MEM-Review"
+  paths:
+    data_raw: "data/raw"
+    models: "models"
+    outputs_figures: "outputs/figures"
+
+data:
+  # Raw dataset configuration
+  tutorial_dataset: "TutorialDataSet.xlsx"
+  # Ion property lookup tables for feature engineering
+  cation_properties: "cation_prop.xlsx"
+  anion_properties: "anion_prop.xlsx"
+
+plotting:
+  # Global figure sizing and font configuration
+  global_figure_size: [14, 10]
+  font_size: 20
+  dpi: 300
+  # Color palette for distribution plots
+  colors:
+    boxplot: ["#25517e", "#4c7da1", "#cd7a69"]
+    violin: ["#cedae6", "#abc5d3", "#e9c2b3"]
+    scatter: "#52687e"
+    median: "#a73b3e"
+    outlier: "#872d30"
+    edge: "#81858a"
+  # Custom colormap for heatmaps and surface plots
+  custom_colormap:
+    name: "my_palette"
+    colors: ["#7FAFD9", "#FFF8EE", "#E38AAA"]
+
+feature_engineering:
+  # Feature filtering thresholds
+  low_variance_threshold: 1e-9
+  missing_value_threshold: 0.3
+  # Ion column names in the dataset
+  cation_column: "S1_Cation"
+  anion_column: "S1_Anion"
+  # Membrane-specific lookup merge configuration
+  # The generic feature_engineering_from_lookups() can reuse this pattern in other projects.
+  lookup_specs:
+    - merge_key: "S1_Cation"
+      lookup_key: "Cation"
+      prefix: "S1_"
+      source_name: "df_cation_S1"
+      data_key: "cation_properties"
+    - merge_key: "S1_Anion"
+      lookup_key: "Anion"
+      prefix: "S1_"
+      source_name: "df_anion_S1"
+      data_key: "anion_properties"
+
+data_analysis:
+  # Correlation analysis thresholds for heatmap filtering
+  correlation_thresholds: [0, 0.1]
+
+modeling:
+  # Model training configuration
+  random_state: 42
+  test_size: 0.2
+  cv_folds: 5
+  use_kfold: true
+  use_hyperparam_tuning: true
+  # Model file naming pattern (uses target name)
+  model_filename_pattern: "{target}_extratrees.pkl"
+
+project_definition:
+  # Canonical selected targets and raw columns shown before feature engineering.
+  # target entries are validated against df.columns in the notebook.
+  target:
+    - "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}"
+    - "solute1_Rejection"
+  features:
+    # Aqueous phase properties
+    - "Dope1_Monomer1_Name"
+    - "Dope1_Monomer1_Mass"
+    - "Dope1_Solvent1_Name"
+    - "Dope1_Solvent1_Mass"
+    - "Dope1_Add1_Name"
+    - "Dope1_Add1_Mass"
+    - "Dope1_Treatment"
+    - "Dope1_Polymerization_Time_min"
+    - "Dope1_Polymerization_Temp_degC"
+    - "Dope1_Posttreat"
+    # Organic phase properties
+    - "Dope2_Monomer1_Name"
+    - "Dope2_Monomer1_Mass"
+    - "Dope2_Solvent1_Name"
+    - "Dope2_Solvent1_Mass"
+    - "Dope2_Treatment"
+    - "Dope2_Polymerization_Time_min"
+    - "Dope2_Polymerization_Temp_degC"
+    - "Dope2_Posttreat"
+    # Measuring conditions
+    - "Mem_Compaction_Pressure_bar"
+    - "Mem_Compaction_Time_hr"
+    - "Filtration_Area_cm2"
+    - "Filtration_Time_min"
+    - "Water_Permeation_Pressure_bar"
+    - "Solute1_Type"
+    - "Solute1_Name"
+    - "Solute1_Feed_ppm"
+    - "S1_Cation"
+    - "S1_Anion"
+
+base_features:
+  # Features used for all models (must be present in enriched dataset)
+  - "Dope1_Monomer1_Name"
+  - "Dope1_Monomer1_Mass"
+  - "Dope1_Solvent1_Mass"
+  - "Dope1_Add1_Name"
+  - "Dope1_Add1_Mass"
+  - "Dope2_Monomer1_Mass"
+  - "Dope2_Solvent1_Name"
+  - "Dope2_Solvent1_Mass"
+  - "Dope2_Polymerization_Time_min"
+  - "Solute1_Name"
+  - "S1_Cation"
+  - "S1_cat_stoke_radius"
+  - "S1_cat_charge"
+  - "S1_an_stoke_radius"
+  - "S1_an_charge"
+
+optimization:
+  # Bayesian optimization (Ax) configuration
+  mode: "multiobjective"  # Options: 'scalarized', 'multiobjective'
+  sobol_init: 5
+  n_trials: 100
+  save_checkpoint_every: 5
+  client_cache_file: "ax_client.pkl"
+  
+  # Objective definitions with weights, thresholds, and normalization ranges
+  objectives:
+    - name: "normPureWaterPermeability"
+      original_name: "PureWaterPermeability"
+      weight: 0.1
+      threshold: ">=0.06"
+      normalization_min: 4.4
+      normalization_max: 85.1
+      
+    - name: "solute1Rejection"
+      original_name: "solute1Rejection"
+      weight: 0.9
+      threshold: ">=0.75"
+      normalization_min: 2.0
+      normalization_max: 99.99
+  
+  # Search space: variables controllable in the experiment
+  search_space:
+    - name: "Dope1_Monomer1_Name"
+      type: "choice"
+      values: ["PIP", "PEI"]
+      is_ordered: false
+      
+    - name: "Dope1_Monomer1_Mass"
+      type: "range"
+      bounds: [0.0001, 0.02]
+      
+    - name: "Dope1_Add1_Name"
+      type: "choice"
+      values: ["SLS", "CTAB", "Tween80"]
+      is_ordered: false
+      
+    - name: "Dope1_Add1_Mass"
+      type: "range"
+      bounds: [0.000393, 0.28838]
+      
+    - name: "Dope2_Monomer1_Mass"
+      type: "range"
+      bounds: [0.0005, 0.0015]
+      
+    - name: "Dope2_Polymerization_Time_min"
+      type: "range"
+      bounds: [0.083, 20.0]
+  
+  # Fixed parameters (context in which optimization occurs)
+  constant_parameters:
+    Dope2_Solvent1_Name: "n-hexane"
+    Solute1_Name: "MgCl_{2}"
+    S1_Cation: "Mg^{2+}"
+    S1_Anion: "Cl^{-}"

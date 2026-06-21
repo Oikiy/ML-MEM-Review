@@ -5,7 +5,10 @@ import joblib
 import pandas as pd
 import warnings
 from numbers import Number
-from ax.api.client import Client
+try:
+    from ax.api.client import Client
+except Exception:
+    Client = None
 from matplotlib.colors import LinearSegmentedColormap
 custom_cmap = LinearSegmentedColormap.from_list(
     "my_palette",
@@ -96,16 +99,79 @@ def _build_multiobjective_thresholds(objective_thresholds=None):
 
 def oracle_from_params(
     params: dict,
-    constant_params:dict,
+    constant_params: dict,
     norm_dict: dict,
-    # model_path_dict:dict,
     weight_dict: dict,
-    cation_path:str,
-    anion_path:str,
+    cation_path: str = None,
+    anion_path: str = None,
+    model_path: str = None,
     optimization_mode: str = "scalarized",
-    
+    config: dict = None,
 ) -> dict:
+    """
+    Oracle function that maps recipe parameters to predicted performance metrics.
+    
+    Parameters
+    ----------
+    params : dict
+        Proposed parameter values from Ax optimizer.
+    constant_params : dict
+        Fixed context parameters (e.g., solvent type, solute identity).
+    norm_dict : dict
+        Normalization ranges for objectives.
+    weight_dict : dict
+        Weighting for multi-objective scalarization.
+    cation_path : str, optional
+        Path to cation properties file. If None, loaded from config.
+    anion_path : str, optional
+        Path to anion properties file. If None, loaded from config.
+    model_path : str, optional
+        Path to models directory. If None, loaded from config.
+    optimization_mode : str
+        'scalarized' or 'multiobjective'.
+    config : dict, optional
+        Configuration dictionary. Used to derive paths if not explicitly provided.
+    
+    Returns
+    -------
+    dict
+        Predicted objective values keyed by objective name.
+    """
+    
     mode = _normalize_optimization_mode(optimization_mode)
+    
+    # Load paths from config if not explicitly provided
+    if config is not None:
+        if cation_path is None:
+            project_root = config.get("_project_root", ".")
+            data_raw = config["project"]["paths"]["data_raw"]
+            cation_path = os.path.join(
+                project_root, data_raw, config["data"]["cation_properties"]
+            )
+        if anion_path is None:
+            project_root = config.get("_project_root", ".")
+            data_raw = config["project"]["paths"]["data_raw"]
+            anion_path = os.path.join(
+                project_root, data_raw, config["data"]["anion_properties"]
+            )
+        if model_path is None:
+            project_root = config.get("_project_root", ".")
+            model_path = os.path.join(project_root, config["project"]["paths"]["models"])
+    
+    # Use global MODEL_PATH if provided (backward compatibility)
+    if model_path is None:
+        try:
+            model_path = MODEL_PATH
+        except NameError:
+            raise ValueError(
+                "model_path must be provided either as argument, via config, or as global MODEL_PATH."
+            )
+    
+    # Validate that paths are available
+    if cation_path is None or anion_path is None:
+        raise ValueError(
+            "cation_path and anion_path must be provided either as arguments or via config."
+        )
 
     # 1) Defaults for missing recipe/test variables (Constant or not included in search space).
     # Merge Ax parameters with defaults (Ax parameters override defaults).
@@ -135,20 +201,20 @@ def oracle_from_params(
     X_raw = pd.DataFrame([combined])
     x_raw_enriched = feature_engineering(
         X_raw,
-        cation_path,
-        anion_path,
+        CATION_PROP_PATH=cation_path,
+        ANION_PROP_PATH=anion_path,
         verbose=False,
     )
 
 
     # 4) Predict with pre-trained models.
-    # Resolve from project-level MODEL_PATH so loading is independent of current working directory.
+    # Resolve from project-level model_path so loading is independent of current working directory.
     pwp_model_path = os.path.join(
-        MODEL_PATH,
+        model_path,
         "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}_extratrees.pkl",
     )
     rej_model_path = os.path.join(
-        MODEL_PATH,
+        model_path,
         "solute1_Rejection_extratrees.pkl",
     )
 
@@ -223,7 +289,16 @@ def run_ax_optimization(
     force_rebuild=False,
     save_every_trials=None,
     return_trial_df: bool = False,
+    model_path=None,
+    config=None,
 ):
+    if Client is None:
+        raise ImportError(
+            "Ax client is unavailable. This is commonly caused by an incompatible or broken "
+            "PyTorch/Ax/Botorch installation in the active environment. Reinstall those "
+            "packages before running inverse design (Section 6)."
+        )
+
     if save_every_trials is not None:
         if not isinstance(save_every_trials, int) or save_every_trials <= 0:
             raise ValueError("save_every_trials must be a positive integer or None")
@@ -287,7 +362,9 @@ def run_ax_optimization(
                     weight_dict=weight_dict,
                     cation_path=cation_path,
                     anion_path=anion_path,
+                    model_path=model_path,
                     optimization_mode=optimization_mode,
+                    config=config,
                 )
 
                 metrics = {k: (float(v), trial_error) for k, v in metrics_raw.items()}

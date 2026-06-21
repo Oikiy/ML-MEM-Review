@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 
 
 def check_and_merge(df, merge_configs, verbose=False):
@@ -14,7 +15,7 @@ def check_and_merge(df, merge_configs, verbose=False):
     Parameters
     ----------
     df : pandas.DataFrame
-        Main dataframe containing membrane recipes / experiments.
+        Main dataframe to enrich.
     merge_configs : list of (str, pandas.DataFrame, str)
         List of merge instructions. Each entry is:
         (merge_key, property_df, property_df_name)
@@ -65,21 +66,123 @@ def check_and_merge(df, merge_configs, verbose=False):
         print("=" * 50)
 
     return df
+
+
+def _load_lookup_table(lookup_source, source_name):
+    """
+    Load a lookup table from either a DataFrame or a file path.
+
+    Parameters
+    ----------
+    lookup_source : pandas.DataFrame or str
+        Source lookup table. Can be an in-memory DataFrame or a file path.
+    source_name : str
+        Human-readable source label for error messages.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Loaded lookup table.
+    """
+    if isinstance(lookup_source, pd.DataFrame):
+        return lookup_source.copy()
+
+    if isinstance(lookup_source, str):
+        try:
+            return pd.read_excel(lookup_source)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"Feature-engineering property file missing for {source_name}: {exc}"
+            ) from exc
+
+    raise TypeError(
+        f"Unsupported lookup source type for {source_name}: {type(lookup_source).__name__}. "
+        "Expected pandas.DataFrame or file path string."
+    )
+
+
+def feature_engineering_from_lookups(df, lookup_specs, verbose=False):
+    """
+    Generic feature engineering via configurable lookup-table merges.
+
+    This function is domain-agnostic and can be reused across projects.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input dataframe to enrich.
+    lookup_specs : list of dict
+        Lookup merge specifications. Each dict supports:
+        - merge_key (str): column name in df to merge on.
+        - lookup_source (pandas.DataFrame or str): lookup table or path to Excel.
+        - lookup_key (str): join key column in the lookup table.
+        - prefix (str, optional): prefix to add to lookup property columns.
+        - source_name (str, optional): label for logging/errors.
+    verbose : bool, optional
+        If True, prints detailed merge logs.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Enriched dataframe.
+    """
+    if df.empty:
+        raise ValueError("Input dataframe for feature engineering is empty.")
+
+    merge_configs = []
+    missing_merge_keys = []
+
+    for spec in lookup_specs:
+        merge_key = spec["merge_key"]
+        lookup_key = spec["lookup_key"]
+        source_name = spec.get("source_name", merge_key)
+        prefix = spec.get("prefix", "")
+
+        if merge_key not in df.columns:
+            missing_merge_keys.append(merge_key)
+            continue
+
+        lookup_df = _load_lookup_table(spec["lookup_source"], source_name)
+
+        if lookup_key not in lookup_df.columns:
+            raise KeyError(
+                f"Lookup key '{lookup_key}' is missing from {source_name}."
+            )
+
+        prepared_lookup = (
+            lookup_df.set_index(lookup_key)
+            .add_prefix(prefix)
+            .reset_index()
+            .rename(columns={lookup_key: merge_key})
+        )
+
+        merge_configs.append((merge_key, prepared_lookup, source_name))
+
+    if missing_merge_keys:
+        print(
+            "Warning: the following feature-engineering key columns are missing "
+            f"and will be skipped: {missing_merge_keys}"
+        )
+
+    if not merge_configs:
+        return df
+
+    return check_and_merge(df, merge_configs, verbose=verbose)
+
+
 def feature_engineering(
     df,
-    CATION_PROP_PATH,
-    ANION_PROP_PATH,
+    CATION_PROP_PATH=None,
+    ANION_PROP_PATH=None,
     verbose=False,
+    config=None,
 ):
     """
-    Enrich the membrane dataset with domain-informed features.
+        Membrane-specific feature engineering wrapper.
 
-    This function:
-    - loads property tables for aqueous monomers, organic monomers, solvents,
-      cations, and anions;
-    - prefixes their columns to indicate role (e.g., dope1_mon1_*, S1_*);
-    - merges the corresponding properties into the main dataframe based on
-      monomer and ion names.
+        This function keeps membrane domain context (ion property lookups) and
+        delegates the merge logic to the reusable generic function
+        `feature_engineering_from_lookups`.
 
     Parameters
     ----------
@@ -89,14 +192,20 @@ def feature_engineering(
         'Dope1_Monomer1_Name', 
         'Dope2_Monomer1_Name', 
         'S1_Cation', 'S1_Anion', 'S2_Cation', 'S2_Anion'.
-    CATION_PROP_PATH : str
+    CATION_PROP_PATH : str, optional
         Path to Excel file with cation properties.
         Must contain a column 'Cation' as key.
-    ANION_PROP_PATH : str
+        If not provided and config is present, loaded from config.
+    ANION_PROP_PATH : str, optional
         Path to Excel file with anion properties.
         Must contain a column 'Anion' as key.
+        If not provided and config is present, loaded from config.
     verbose : bool, optional
         If True, prints detailed logging about missing columns and merges.
+    config : dict, optional
+        Configuration dictionary (from config_loader.load_config()).
+        If provided, paths are extracted from config when CATION_PROP_PATH 
+        or ANION_PROP_PATH are None.
 
     Returns
     -------
@@ -105,55 +214,87 @@ def feature_engineering(
         - Dope1/Dope2 monomer 1 and 2 (e.g., MW, atom counts, functional groups),
         - solute 1 and solute 2 cations and anions (e.g., radius, charge).
     """
-    # Columns we ideally want for merging ion properties
-    required_columns = [
+    
+    # Load paths from config if not explicitly provided
+    if config is not None:
+        if CATION_PROP_PATH is None:
+            project_root = config.get("_project_root", ".")
+            data_raw = config["project"]["paths"]["data_raw"]
+            CATION_PROP_PATH = os.path.join(
+                project_root, data_raw, config["data"]["cation_properties"]
+            )
+        if ANION_PROP_PATH is None:
+            project_root = config.get("_project_root", ".")
+            data_raw = config["project"]["paths"]["data_raw"]
+            ANION_PROP_PATH = os.path.join(
+                project_root, data_raw, config["data"]["anion_properties"]
+            )
 
-        "S1_Cation",
-        "S1_Anion"
-    ]
+    # Optional config-driven lookup specifications for membrane context.
+    # This allows the membrane lookup mapping to be maintained in config.yaml.
+    if config is not None:
+        fe_cfg = config.get("feature_engineering", {})
+        cfg_lookup_specs = fe_cfg.get("lookup_specs")
 
-    available_cols = [col for col in required_columns if col in df.columns]
-    missing_cols = [col for col in required_columns if col not in df.columns]
+        if cfg_lookup_specs:
+            project_root = config.get("_project_root", ".")
+            data_raw = config["project"]["paths"]["data_raw"]
 
-    if missing_cols:
-        print(
-            "Warning: the following feature-engineering key columns are missing "
-            f"and will be skipped: {missing_cols}"
+            resolved_lookup_specs = []
+            for spec in cfg_lookup_specs:
+                resolved_spec = {
+                    "merge_key": spec["merge_key"],
+                    "lookup_key": spec["lookup_key"],
+                    "prefix": spec.get("prefix", ""),
+                    "source_name": spec.get("source_name", spec["merge_key"]),
+                }
+
+                # Prefer explicit lookup_source if provided, otherwise resolve from data_key.
+                if "lookup_source" in spec and spec["lookup_source"] is not None:
+                    resolved_spec["lookup_source"] = spec["lookup_source"]
+                elif "data_key" in spec:
+                    data_file = config["data"][spec["data_key"]]
+                    resolved_spec["lookup_source"] = os.path.join(
+                        project_root, data_raw, data_file
+                    )
+                else:
+                    raise ValueError(
+                        "Each lookup spec must define either 'lookup_source' or 'data_key'."
+                    )
+
+                resolved_lookup_specs.append(resolved_spec)
+
+            return feature_engineering_from_lookups(
+                df,
+                resolved_lookup_specs,
+                verbose=verbose,
+            )
+    
+    # Validate that paths are provided
+    if CATION_PROP_PATH is None or ANION_PROP_PATH is None:
+        raise ValueError(
+            "CATION_PROP_PATH and ANION_PROP_PATH must be provided either as "
+            "explicit arguments or via config parameter."
         )
-        print(f"Columns available for merging: {available_cols}")
-
-    if df.empty:
-        raise ValueError("Input dataframe for feature_engineering is empty.")
-
-    # Load property tables
-    try:
-        df_cation = pd.read_excel(CATION_PROP_PATH)
-        df_anion = pd.read_excel(ANION_PROP_PATH)
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Feature-engineering property file missing: {e}") from e
-
-    # Set indices for easier prefixing and joining
-    cation_props = df_cation.set_index("Cation")
-    anion_props = df_anion.set_index("Anion")
-
-    # Cation/anion properties for solute 1 and solute 2
-    df_cation_S1 = (
-        cation_props.add_prefix("S1_").reset_index().rename(columns={"Cation": "S1_Cation"})
-    )
-
-    df_anion_S1 = (
-        anion_props.add_prefix("S1_").reset_index().rename(columns={"Anion": "S1_Anion"})
-    )
-
-    # Define all merge steps to perform
-    merge_configs = [
-        ("S1_Cation", df_cation_S1, "df_cation_S1"),
-        ("S1_Anion", df_anion_S1, "df_anion_S1")
+    # Membrane-context lookup specifications
+    lookup_specs = [
+        {
+            "merge_key": "S1_Cation",
+            "lookup_source": CATION_PROP_PATH,
+            "lookup_key": "Cation",
+            "prefix": "S1_",
+            "source_name": "df_cation_S1",
+        },
+        {
+            "merge_key": "S1_Anion",
+            "lookup_source": ANION_PROP_PATH,
+            "lookup_key": "Anion",
+            "prefix": "S1_",
+            "source_name": "df_anion_S1",
+        },
     ]
 
-    df = check_and_merge(df, merge_configs, verbose=verbose)
-
-    return df
+    return feature_engineering_from_lookups(df, lookup_specs, verbose=verbose)
 
 
 def remove_low_variance_columns(df, exclude_columns=None, variance_threshold=0.0):
@@ -177,13 +318,14 @@ def remove_low_variance_columns(df, exclude_columns=None, variance_threshold=0.0
     """
     if exclude_columns is None:
         exclude_columns = []
+
     
     # Find columns with variance below threshold
     low_var_cols = []
     for col in df.columns:
         if col not in exclude_columns:
             # For numerical columns, check variance
-            if df[col].dtype in ['int64', 'float64', 'int32', 'float32']:
+            if pd.api.types.is_numeric_dtype(df[col]):
                 non_null_values = df[col].dropna()
                 if len(non_null_values) > 1:
                     variance = non_null_values.var()
@@ -203,7 +345,7 @@ def remove_low_variance_columns(df, exclude_columns=None, variance_threshold=0.0
     if low_var_cols:
         print(f"Removed {len(low_var_cols)} low variance columns (threshold: {variance_threshold}):")
         for col in low_var_cols:
-            if df[col].dtype in ['int64', 'float64', 'int32', 'float32']:
+            if pd.api.types.is_numeric_dtype(df[col]):
                 non_null_values = df[col].dropna()
                 if len(non_null_values) > 1:
                     variance = non_null_values.var()

@@ -1,6 +1,5 @@
 import joblib
 import numpy as np
-import shap
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.model_selection import train_test_split
@@ -60,6 +59,15 @@ def shap_explain_target(
     bar_fig : matplotlib.figure.Figure
         SHAP mean absolute contribution bar figure.
     """
+    try:
+        import shap
+    except Exception as exc:
+        raise ImportError(
+            "SHAP could not be imported. This is often caused by a broken or incompatible "
+            "PyTorch installation. Reinstall shap/torch in the active environment before "
+            "running SHAP analysis."
+        ) from exc
+
     print(f"\n=== SHAP interpretation for target: {target} ===")
 
     # Load the saved pipeline for this target
