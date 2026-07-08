@@ -10,13 +10,6 @@ project:
     models: "models"
     outputs_figures: "outputs/figures"
 
-data:
-  # Raw dataset configuration
-  tutorial_dataset: "TutorialDataSet.xlsx"
-  # Ion property lookup tables for feature engineering
-  cation_properties: "cation_prop.xlsx"
-  anion_properties: "anion_prop.xlsx"
-
 plotting:
   # Global figure sizing and font configuration
   global_figure_size: [14, 10]
@@ -35,40 +28,9 @@ plotting:
     name: "my_palette"
     colors: ["#7FAFD9", "#FFF8EE", "#E38AAA"]
 
-feature_engineering:
-  # Feature filtering thresholds
-  low_variance_threshold: 1e-9
-  missing_value_threshold: 0.3
-  # Ion column names in the dataset
-  cation_column: "S1_Cation"
-  anion_column: "S1_Anion"
-  # Membrane-specific lookup merge configuration
-  # The generic feature_engineering_from_lookups() can reuse this pattern in other projects.
-  lookup_specs:
-    - merge_key: "S1_Cation"
-      lookup_key: "Cation"
-      prefix: "S1_"
-      source_name: "df_cation_S1"
-      data_key: "cation_properties"
-    - merge_key: "S1_Anion"
-      lookup_key: "Anion"
-      prefix: "S1_"
-      source_name: "df_anion_S1"
-      data_key: "anion_properties"
-
-data_analysis:
-  # Correlation analysis thresholds for heatmap filtering
-  correlation_thresholds: [0, 0.1]
-
-modeling:
-  # Model training configuration
-  random_state: 42
-  test_size: 0.2
-  cv_folds: 5
-  use_kfold: true
-  use_hyperparam_tuning: true
-  # Model file naming pattern (uses target name)
-  model_filename_pattern: "{target}_extratrees.pkl"
+data:
+  # Raw dataset configuration
+  dataset: "TutorialDataSet.xlsx"
 
 project_definition:
   # Canonical selected targets and raw columns shown before feature engineering.
@@ -109,7 +71,37 @@ project_definition:
     - "S1_Cation"
     - "S1_Anion"
 
-base_features:
+feature_engineering:
+  # Feature filtering thresholds
+  low_variance_threshold: 1e-9
+  missing_value_threshold: 0.3
+  # Grouped lookup definitions. Each entry configures one enrichment join.
+  lookups:
+    - align_column: "S1_Cation"   # Column in the main dataset
+      lookup_key: "Cation"        # Matching key column in lookup file
+      lookup_path: "data/raw/cation_prop.xlsx"
+      lookup_prefix: "S1_cat_"
+      
+    - align_column: "S1_Anion"
+      lookup_key: "Anion"
+      lookup_path: "data/raw/anion_prop.xlsx"
+      lookup_prefix: "S1_an_"
+  # Optional synthetic features defined by output name and full arithmetic equation.
+  # Each equation can reference existing numeric columns directly.
+  synthetic_feature:
+    - name: "total_dope_mass"
+      equation: "Dope1_Monomer1_Mass + Dope1_Add1_Mass + Dope2_Monomer1_Mass"
+
+    - name: "aqueous_to_organic_monomer_ratio"
+      equation: "Dope1_Monomer1_Mass / Dope2_Monomer1_Mass"
+      
+data_analysis:
+  # Correlation analysis thresholds for heatmap filtering
+  correlation_thresholds: [0, 0.1]
+  # Show numeric values inside Pearson heatmap cells.
+  pearson_heatmap_show_annotations: true
+
+features_to_model:
   # Features used for all models (must be present in enriched dataset)
   - "Dope1_Monomer1_Name"
   - "Dope1_Monomer1_Mass"
@@ -127,6 +119,47 @@ base_features:
   - "S1_an_stoke_radius"
   - "S1_an_charge"
 
+
+
+modeling:
+  # Model training configuration
+  model_selection: "extratrees"
+  random_state: 42
+  train_test_ratio: 0.2
+  n_estimators: 300
+  cv_folds: 5
+  use_kfold: true
+  use_hyperparam_tuning: true
+  # Search backend for hyperparameter tuning: randomizedsearchcv | gridsearchcv | bayessearchcv
+  search_cv: "randomizedsearchcv"
+  n_iter_search: 20
+  # PipelineConfig-style definition (see src/utl_model_arch.py)
+  pipeline:
+    categorical_encoder: "onehot"
+    categorical_encoder_params: {}
+    numerical_scaler: "passthrough"
+    numerical_scaler_params: {}
+    categorical_imputer_strategy: "most_frequent"
+    numerical_imputer_strategy: "median"
+    feature_selector: "passthrough"
+    feature_selector_params: {}
+    model: "extratrees"
+    default_model_params:
+      n_estimators: 300
+      random_state: 42
+    preprocess_params: {}
+    pipeline_params: {}
+  # RandomizedSearchCV search space for ExtraTreesRegressor
+  param_dist:
+    model__n_estimators: [200, 300, 500, 800]
+    model__max_depth: [null, 10, 20, 40]
+    model__min_samples_leaf: [1, 2, 5]
+    model__max_features: ["sqrt", "log2", 0.5, 0.8]
+  # Model file naming pattern (target, model key, and inferred task label)
+  model_filename_pattern: "{target}_{model}_{task}.pkl"
+  
+
+
 optimization:
   # Bayesian optimization (Ax) configuration
   mode: "multiobjective"  # Options: 'scalarized', 'multiobjective'
@@ -134,19 +167,32 @@ optimization:
   n_trials: 100
   save_checkpoint_every: 5
   client_cache_file: "ax_client.pkl"
+
+  # Used when mode == 'scalarized'. The equation is evaluated against one-row
+  # metric variables produced by the oracle. Available variables include:
+  # - objective-space metrics: normPureWaterPermeability, solute1Rejection
+  # - direction-aware objective aliases: opt_normPureWaterPermeability, opt_solute1Rejection
+  # - raw/original model outputs when available: PureWaterPermeability,
+  #   raw_PureWaterPermeability, pred_PureWaterPermeability, raw_solute1Rejection,
+  #   pred_solute1Rejection. If an original name collides with an objective-space
+  #   metric name, the bare name keeps the objective-space value and the raw/pred_
+  #   aliases hold the surrogate prediction.
+  scalarized_objective:
+    name: "scalarizedobjective"
+    equation: "0.1 * opt_normPureWaterPermeability + 0.9 * opt_solute1Rejection"
   
-  # Objective definitions with weights, thresholds, and normalization ranges
+  # Objective definitions with directions, thresholds, and normalization ranges
   objectives:
     - name: "normPureWaterPermeability"
       original_name: "PureWaterPermeability"
-      weight: 0.1
+      direction: "maximize"
       threshold: ">=0.06"
       normalization_min: 4.4
       normalization_max: 85.1
       
     - name: "solute1Rejection"
       original_name: "solute1Rejection"
-      weight: 0.9
+      direction: "maximize"
       threshold: ">=0.75"
       normalization_min: 2.0
       normalization_max: 99.99
@@ -185,3 +231,37 @@ optimization:
     Solute1_Name: "MgCl_{2}"
     S1_Cation: "Mg^{2+}"
     S1_Anion: "Cl^{-}"
+    Dope1_Monomer2_Mass: 0.0
+    Dope1_Solvent2_Mass: 0.0
+    Dope1_Add2_Mass: 0.0
+    Dope2_Monomer2_Mass: 0.0
+    Dope2_Solvent2_Mass: 0.0
+    Dope2_Add_Mass: 0.0
+
+  # Computed parameters derived from search-space and fixed context.
+  # Equations are evaluated in order and can reference earlier computed values.
+  computed_parameters:
+    - name: "Dope1_Solvent1_Mass"
+      equation: "1.0 - Dope1_Monomer1_Mass - Dope1_Add1_Mass - Dope1_Monomer2_Mass - Dope1_Solvent2_Mass - Dope1_Add2_Mass"
+      min_value: 0.0
+
+    - name: "Dope2_Solvent1_Mass"
+      equation: "1.0 - Dope2_Monomer1_Mass - Dope2_Monomer2_Mass - Dope2_Solvent2_Mass - Dope2_Add_Mass"
+      min_value: 0.0
+
+  # Inverse-design plotting defaults used by src/utl_Ax.py.
+  inverse_design:
+    figure_size: [12, 8]
+    xtick_step: 10
+    title: "Inverse Design Metrics Evolution"
+    save_name: "inverse_design_metrics_evolution.png"
+    aggregate_name: "objective_sum"
+    aggregate_display_name: "Sum of Objectives"
+    make_parallel_coordinates: false
+    response_map_specs:
+      - x_col: "solute1Rejection"
+        y_col: "normPureWaterPermeability"
+        z_col: "objective_sum"
+      - x_col: "Dope1_Monomer1_Mass"
+        y_col: "Dope1_Add1_Mass"
+        z_col: "objective_sum"

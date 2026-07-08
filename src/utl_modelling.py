@@ -1,55 +1,78 @@
 import os
+from typing import Optional
+
 import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import ExtraTreesRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import KFold, RandomizedSearchCV, train_test_split
+from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_score,
+    r2_score,
+    recall_score,
+)
+from sklearn.model_selection import GridSearchCV, KFold, RandomizedSearchCV, StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.utils.multiclass import type_of_target
+
+from utl_config_loader import get_model_dir, load_config
+
+try:
+    from imblearn.over_sampling import BorderlineSMOTE
+    from imblearn.pipeline import Pipeline as ImbPipeline
+except Exception:  # pragma: no cover - optional dependency
+    BorderlineSMOTE = None
+    ImbPipeline = None
+
+try:
+    from skopt import BayesSearchCV
+except Exception:  # pragma: no cover - optional dependency
+    BayesSearchCV = None
+
 
 RANDOM_STATE = 42
 FONT_SIZE = 20
 
-def _build_feature_table(df_raw: pd.DataFrame, base_features: list, target: str, threshold = 0.3):
-    """
-    An internal function that builds an ML-ready feature table from the raw NF membrane dataset.
 
-    Tutorial notes
-    --------------
-    1) Keep only rows where the chosen target exists (supervised learning needs labels).
-    2) Keep only features that are actually present in this dataset version.
-    3) Remove high-missing and constant columns to reduce noise and instability.
-    """
+def _make_one_hot_encoder():
+    try:
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+
+def _build_feature_table(
+    df_raw: pd.DataFrame,
+    features_to_model: list,
+    target: str,
+    missing_value_threshold: float = 0.3,
+):
+    """Build an ML-ready feature table from the raw dataset."""
     df = df_raw.copy()
-
-    # Keep only rows with a valid target value.
-    # This ensures X and y are aligned and avoids NaN labels during fitting.
     df = df.dropna(subset=[target]).reset_index(drop=True)
+    features_to_model = [c for c in features_to_model if c in df.columns]
 
-    # Keep only columns that exist in this dataset
-    # (important when moving the notebook between batches with slightly different schemas).
-    base_features = [c for c in base_features if c in df.columns]
-
-    # Split into features and target
-    X = df[base_features].copy()
+    X = df[features_to_model].copy()
     y = df[target].copy()
 
     print(f"Initial feature count: {X.shape[1]}")
     print(f"Initial sample count: {X.shape[0]}")
 
-    # Drop columns with too many missing values
     missing_frac = X.isna().mean()
-    high_missing_cols = missing_frac[missing_frac > threshold].index.tolist()
+    high_missing_cols = missing_frac[missing_frac > missing_value_threshold].index.tolist()
     if high_missing_cols:
         print("Dropping high-missing columns:", high_missing_cols)
         X = X.drop(columns=high_missing_cols)
 
-    # Drop columns that are constant (no variance)
-    # Constant columns cannot help tree splits and only increase model complexity.
     nunique = X.nunique(dropna=False)
     constant_cols = nunique[nunique <= 1].index.tolist()
     if constant_cols:
@@ -59,21 +82,149 @@ def _build_feature_table(df_raw: pd.DataFrame, base_features: list, target: str,
     print(f"Final feature count: {X.shape[1]}")
     return X, y
 
-def regression_metrics(y_true, y_pred, label="", verbose: bool = True):
-    """
-    Compute and print standard regression metrics.
 
-    Parameters
-    ----------
-    y_true : array-like
-        Ground-truth target values.
-    y_pred : array-like
-        Predicted target values.
-    label : str, optional
-        Label indicating which split ('Train' or 'Test') the metrics belong to.
-    verbose : bool, optional
-        If True, print metrics. If False, return metrics silently.
-    """
+def _split_feature_types(df_frame: pd.DataFrame, feature_list: list):
+    model_features = [feature for feature in feature_list if feature in df_frame.columns]
+    categorical_cols = [
+        feature
+        for feature in model_features
+        if df_frame[feature].dtype == "object"
+        or df_frame[feature].dtype.name == "category"
+        or df_frame[feature].dtype == "bool"
+    ]
+    numerical_cols = [feature for feature in model_features if feature not in categorical_cols]
+    return model_features, categorical_cols, numerical_cols
+
+
+def _final_estimator(estimator):
+    if hasattr(estimator, "named_steps") and getattr(estimator, "named_steps"):
+        return list(estimator.named_steps.values())[-1]
+    if hasattr(estimator, "steps") and getattr(estimator, "steps"):
+        return estimator.steps[-1][1]
+    return estimator
+
+
+def _infer_task(task: Optional[str], pipeline, y):
+    requested_task = (task or "auto").lower()
+    if requested_task != "auto":
+        if requested_task not in {"classification", "regression"}:
+            raise ValueError("task must be 'auto', 'classification', or 'regression'.")
+        return requested_task
+
+    if pipeline is not None:
+        estimator = _final_estimator(pipeline)
+        estimator_type = getattr(estimator, "_estimator_type", None)
+        if estimator_type in {"classifier", "regressor"}:
+            return estimator_type
+
+    y_series = y if isinstance(y, pd.Series) else pd.Series(y)
+    if type_of_target(y_series) in {"binary", "multiclass"}:
+        return "classification"
+    return "regression"
+
+
+def _default_param_dist(task: str):
+    if task == "classification":
+        return {
+            "model__n_estimators": [200, 300, 500, 800],
+            "model__max_depth": [None, 10, 20, 40],
+            "model__min_samples_leaf": [1, 2, 5],
+            "model__max_features": ["sqrt", "log2", 0.5, 0.8],
+            "model__criterion": ["gini", "entropy"],
+        }
+
+    return {
+        "model__n_estimators": [200, 300, 500, 800],
+        "model__max_depth": [None, 10, 20, 40],
+        "model__min_samples_leaf": [1, 2, 5],
+        "model__max_features": ["sqrt", "log2", 0.5, 0.8],
+    }
+
+
+def _default_model(task: str, random_state: int, n_estimators: int):
+    if task == "classification":
+        return ExtraTreesClassifier(n_estimators=n_estimators, random_state=random_state, n_jobs=-1)
+    return ExtraTreesRegressor(n_estimators=n_estimators, random_state=random_state, n_jobs=-1)
+
+
+def _task_to_filename_label(task: str) -> str:
+    task_lower = str(task).lower()
+    if task_lower == "regression":
+        return "regressor"
+    if task_lower == "classification":
+        return "classifier"
+    return task_lower
+
+
+def _resolve_model_path(
+    model_dir: str,
+    model_filename_pattern: str,
+    target: str,
+    task: str,
+    model: str,
+) -> str:
+    task_label = _task_to_filename_label(task)
+    filename = model_filename_pattern.format(target=target, task=task_label, model=model)
+    if "{task}" not in model_filename_pattern:
+        base_name, extension = os.path.splitext(filename)
+        filename = f"{base_name}_{task_label}{extension}"
+    return os.path.join(model_dir, filename)
+
+
+def _build_default_pipeline(
+    X_train: pd.DataFrame,
+    task: str,
+    random_state: int,
+    n_estimators: int,
+    use_smote: bool = False,
+    estimator=None,
+):
+    _, categorical_cols, numerical_cols = _split_feature_types(X_train, list(X_train.columns))
+
+    transformers = []
+    if numerical_cols:
+        transformers.append(
+            (
+                "num",
+                Pipeline(steps=[("imputer", SimpleImputer(strategy="median"))]),
+                numerical_cols,
+            )
+        )
+    if categorical_cols:
+        transformers.append(
+            (
+                "cat",
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="most_frequent")),
+                        ("onehot", _make_one_hot_encoder()),
+                    ]
+                ),
+                categorical_cols,
+            )
+        )
+
+    if not transformers:
+        raise ValueError("No usable features remain after preprocessing.")
+
+    preprocess = ColumnTransformer(transformers=transformers, remainder="drop")
+    model = estimator if estimator is not None else _default_model(task, random_state, n_estimators)
+
+    if task == "classification" and use_smote:
+        if ImbPipeline is None or BorderlineSMOTE is None:
+            raise ImportError("imblearn is required when use_smote=True for classification training.")
+        return ImbPipeline(
+            steps=[
+                ("preprocess", preprocess),
+                ("smote", BorderlineSMOTE(random_state=random_state)),
+                ("model", model),
+            ]
+        )
+
+    return Pipeline(steps=[("preprocess", preprocess), ("model", model)])
+
+
+def regression_metrics(y_true, y_pred, label="", verbose: bool = True):
     r2 = r2_score(y_true, y_pred)
     mse = mean_squared_error(y_true, y_pred)
     rmse = np.sqrt(mse)
@@ -84,174 +235,255 @@ def regression_metrics(y_true, y_pred, label="", verbose: bool = True):
         print(f"{label} MAE  = {mae:.4f}")
     return r2, rmse, mae
 
-def train_and_save_extratrees_model(
-    df,
-    base_features,
-    target,
-    model_path,
-    test_size=0.2,
-    random_state=RANDOM_STATE,
-    n_estimators=300,
-    use_kfold=False,
-    n_splits=5,
-    use_hyperparam_tuning=False,
-    n_iter_search=20,
-    force_retrain=False,
+
+def classification_metrics(y_true, y_pred, label="", verbose: bool = True):
+    accuracy = accuracy_score(y_true, y_pred)
+    balanced_accuracy = balanced_accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, average="weighted", zero_division=0)
+    recall = recall_score(y_true, y_pred, average="weighted", zero_division=0)
+    f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
+    if verbose:
+        print(f"{label} Accuracy         = {accuracy:.4f}")
+        print(f"{label} Balanced accuracy = {balanced_accuracy:.4f}")
+        print(f"{label} Precision        = {precision:.4f}")
+        print(f"{label} Recall           = {recall:.4f}")
+        print(f"{label} F1               = {f1:.4f}")
+    return accuracy, balanced_accuracy, precision, recall, f1
+
+
+def fit_pipeline(
+    pipe,
+    X_train,
+    y_train,
+    use_hyperparam_tuning: bool,
+    use_kfold: bool,
+    n_splits: int,
+    n_iter_search: int,
+    param_dist: dict,
+    random_state: int,
+    task: str,
+    scoring: Optional[str] = None,
+    search_cv: str = "randomizedsearchcv",
 ):
-    """
-    Build features, train an ExtraTreesRegressor in a sklearn Pipeline,
-    optionally use K-fold CV and hyperparameter tuning, and save the fitted
-    pipeline to disk.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Input dataframe (already enriched by feature_engineering).
-    base_features : list of str
-        List of candidate feature column names to pass to build_feature_table.
-    target : str
-        Name of the target column to predict.
-    model_path : str
-        File path for saving the fitted pipeline (e.g. 'models/IPlayerThicknessnm.pkl').
-    test_size : float, optional
-        Fraction of data to use for the test split.
-    random_state : int, optional
-        Random seed for reproducible splits and models.
-    n_estimators : int, optional
-        Default number of trees for ExtraTreesRegressor when tuning is disabled.
-    use_kfold : bool, optional
-        If True, K-fold CV is used for tuning/assessment inside RandomizedSearchCV.
-    n_splits : int, optional
-        Number of folds for KFold when use_kfold is True.
-    use_hyperparam_tuning : bool, optional
-        If True, perform RandomizedSearchCV over ExtraTrees hyperparameters.
-        If False, fit a single ExtraTrees model with fixed n_estimators.
-    n_iter_search : int, optional
-        Number of parameter settings sampled in RandomizedSearchCV
-        when use_hyperparam_tuning is True.
-    force_retrain : bool, optional
-        If True, retrain and overwrite an existing model at model_path.
-        If False (default), load existing model when present and skip retraining.
-
-    Returns
-    -------
-    pipe : sklearn.Pipeline
-        Fitted pipeline (preprocessing + model).
-    X_train, X_test, y_train, y_test : arrays / DataFrames
-        Train/test splits for further analysis (e.g. SHAP).
-    """
-    # Build ML-ready feature table
-    X, y = _build_feature_table(df, base_features=base_features, target=target)
-
-    # Train-test split kept outside CV so we still have an untouched holdout set.
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
-
-    # Reuse existing model to avoid unnecessary retraining.
-    if os.path.exists(model_path) and not force_retrain:
-        print(f"\n=== Reusing existing model for target: {target} ===")
-        print(f"Loading model from: {model_path}")
-        pipe = joblib.load(model_path)
-
-        return pipe, X_train, X_test, y_train, y_test
-
-    print(f"\n=== Training ExtraTrees model for target: {target} ===")
-    print("Training samples:", X_train.shape[0], "using features:", X_train.columns.tolist())
-    print("Test samples:", X_test.shape[0])
-
-    # Identify categorical vs numerical features
-    categorical_cols = X_train.select_dtypes(include=["object"]).columns.tolist()
-    numerical_cols = X_train.select_dtypes(exclude=["object"]).columns.tolist()
-
-    print("Categorical features:", len(categorical_cols))
-    print("Numerical features:", len(numerical_cols))
-
-    # Preprocessing
-    categorical_transformer = OneHotEncoder(
-        handle_unknown="ignore",
-        sparse_output=False,
-    )
-
-    preprocess = ColumnTransformer(
-        transformers=[
-            ("cat", categorical_transformer, categorical_cols),
-            ("num", "passthrough", numerical_cols),
-        ]
-    )
-
-    # Base model
-    base_model = ExtraTreesRegressor(
-        n_estimators=n_estimators,
-        random_state=random_state,
-        n_jobs=-1,
-    )
-
-    # Assemble pipeline
-    pipe = Pipeline(
-        steps=[
-            ("preprocess", preprocess),
-            ("model", base_model),
-        ]
-    )
-
-    # Option 1: simple fit (no tuning)
     if not use_hyperparam_tuning:
-        print("Hyperparameter tuning: OFF (using default ExtraTrees settings).")
+        print("Hyperparameter tuning: OFF.")
         pipe.fit(X_train, y_train)
+        return pipe
 
-    # Option 2: hyperparameter tuning (with optional K-fold CV)
-    else:
-        print("Hyperparameter tuning: ON")
-        if use_kfold:
-            print(f"Using K-fold CV with n_splits={n_splits}.")
-            cv = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    print("Hyperparameter tuning: ON")
+    if use_kfold:
+        if task == "classification":
+            print(f"Using StratifiedKFold with n_splits={n_splits}.")
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
         else:
-            print("Using default CV strategy from RandomizedSearchCV (e.g., 5-fold).")
-            cv = None  # RandomizedSearchCV default
+            print(f"Using KFold with n_splits={n_splits}.")
+            cv = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    else:
+        print("Using default CV strategy from RandomizedSearchCV.")
+        cv = None
 
-        param_dist = {
-            "model__n_estimators": [200, 300, 500, 800],
-            "model__max_depth": [None, 10, 20, 40],
-            "model__min_samples_leaf": [1, 2, 5],
-            "model__max_features": ["sqrt", "log2", 0.5, 0.8],
-        }
+    if scoring is None:
+        scoring = "accuracy" if task == "classification" else "r2"
 
+    search_cv_key = (search_cv or "randomizedsearchcv").strip().lower()
+
+    if search_cv_key in {"randomized", "randomizedsearch", "randomizedsearchcv"}:
+        print("Search backend: RandomizedSearchCV")
         search = RandomizedSearchCV(
             pipe,
             param_distributions=param_dist,
             n_iter=n_iter_search,
             cv=cv,
-            scoring="r2",
+            scoring=scoring,
             n_jobs=-1,
             random_state=random_state,
             verbose=1,
         )
+    elif search_cv_key in {"grid", "gridsearch", "gridsearchcv"}:
+        print("Search backend: GridSearchCV")
+        search = GridSearchCV(
+            pipe,
+            param_grid=param_dist,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=-1,
+            verbose=1,
+        )
+    elif search_cv_key in {"bayes", "bayesian", "bayesiansearch", "bayesiansearchcv", "bayessearchcv"}:
+        if BayesSearchCV is None:
+            raise ImportError(
+                "BayesSearchCV requested but scikit-optimize is not available. "
+                "Install scikit-optimize (skopt) or choose another search_cv backend."
+            )
+        print("Search backend: BayesSearchCV")
+        search = BayesSearchCV(
+            pipe,
+            search_spaces=param_dist,
+            n_iter=n_iter_search,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=-1,
+            random_state=random_state,
+            verbose=1,
+        )
+    else:
+        raise ValueError(
+            "Unsupported search_cv value. Use one of: "
+            "randomizedsearchcv, gridsearchcv, bayessearchcv. "
+            f"Received: {search_cv}"
+        )
 
-        search.fit(X_train, y_train)
+    search.fit(X_train, y_train)
 
-        print(f"Best CV R²: {search.best_score_:.4f}")
-        print("Best parameters:")
-        for k, v in search.best_params_.items():
-            print(f"  {k}: {v}")
+    print(f"Best CV score: {search.best_score_:.4f}")
+    print("Best parameters:")
+    for key, value in search.best_params_.items():
+        print(f"  {key}: {value}")
 
-        # Replace pipe with best estimator
-        pipe = search.best_estimator_
+    return search.best_estimator_
 
-    # Evaluate on train and test
+
+def _print_train_test_metrics(task: str, y_train, y_pred_train, y_test, y_pred_test):
+    print("\nFinal performance on train/test split:")
+    if task == "classification":
+        classification_metrics(y_train, y_pred_train, label="Train")
+        classification_metrics(y_test, y_pred_test, label="Test")
+        return
+
+    regression_metrics(y_train, y_pred_train, label="Train")
+    regression_metrics(y_test, y_pred_test, label="Test")
+
+
+def train_model(
+    df,
+    target,
+    pipeline=None,
+    config_path=None,
+    force_retrain=False,
+    param_dist_override=None,
+    task="auto",
+    use_smote: Optional[bool] = None,
+    scoring: Optional[str] = None,
+):
+    """Train a regression or classification model using a single entry point."""
+    config = load_config(config_path=config_path)
+    modeling_cfg = config.get("modeling", {})
+    feature_engineering_cfg = config.get("feature_engineering", {})
+    features_to_model = config.get("features_to_model", [])
+
+    resolved_task = _infer_task(task, pipeline, df[target].dropna())
+
+    model_dir = get_model_dir(config)
+    selected_model_name = modeling_cfg.get("model_selection", "extratrees")
+    model_filename_pattern = modeling_cfg.get("model_filename_pattern", "{target}_{model}_{task}.pkl")
+    model_path = _resolve_model_path(
+        model_dir=model_dir,
+        model_filename_pattern=model_filename_pattern,
+        target=target,
+        task=resolved_task,
+        model=selected_model_name,
+    )
+
+    train_test_ratio = modeling_cfg.get("train_test_ratio", 0.2)
+    random_state = modeling_cfg.get("random_state", RANDOM_STATE)
+    n_estimators = modeling_cfg.get("n_estimators", 300)
+    use_kfold = modeling_cfg.get("use_kfold", False)
+    n_splits = modeling_cfg.get("cv_folds", modeling_cfg.get("n_splits", 5))
+    use_hyperparam_tuning = modeling_cfg.get("use_hyperparam_tuning", False)
+    n_iter_search = modeling_cfg.get("n_iter_search", 20)
+    search_cv = modeling_cfg.get("search_cv", "randomizedsearchcv")
+    use_smote = modeling_cfg.get("use_smote", False) if use_smote is None else use_smote
+    param_dist = param_dist_override or modeling_cfg.get("param_dist", _default_param_dist(resolved_task))
+    missing_value_threshold = feature_engineering_cfg.get("missing_value_threshold", 0.3)
+
+    X, y = _build_feature_table(
+        df,
+        features_to_model=features_to_model,
+        target=target,
+        missing_value_threshold=missing_value_threshold,
+    )
+
+    if resolved_task == "classification" and y.nunique(dropna=True) < 2:
+        raise ValueError("Classification training requires at least two target classes.")
+
+    stratify_target = None
+    if resolved_task == "classification":
+        class_counts = y.value_counts(dropna=True)
+        if not class_counts.empty and class_counts.min() >= 2:
+            stratify_target = y
+
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=train_test_ratio,
+            random_state=random_state,
+            stratify=stratify_target,
+        )
+    except ValueError:
+        print("Warning: stratified split failed, falling back to an unstratified split.")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=train_test_ratio,
+            random_state=random_state,
+        )
+
+    if os.path.exists(model_path) and not force_retrain:
+        print(f"\n=== Reusing existing model for target: {target} ===")
+        print(f"Loading model from: {model_path}")
+        pipe = joblib.load(model_path)
+    else:
+        print(f"\n=== Training {resolved_task} model for target: {target} ===")
+        print("Training samples:", X_train.shape[0], "using features:", X_train.columns.tolist())
+        print("Test samples:", X_test.shape[0])
+
+        pipe = pipeline
+        if pipe is None:
+            pipe = _build_default_pipeline(
+                X_train=X_train,
+                task=resolved_task,
+                random_state=random_state,
+                n_estimators=n_estimators,
+                use_smote=use_smote,
+            )
+        elif not hasattr(pipe, "named_steps") and not hasattr(pipe, "steps"):
+            pipe = _build_default_pipeline(
+                X_train=X_train,
+                task=resolved_task,
+                random_state=random_state,
+                n_estimators=n_estimators,
+                use_smote=use_smote,
+                estimator=pipe,
+            )
+
+        print("Pipeline received:", type(pipe).__name__)
+
+        pipe = fit_pipeline(
+            pipe=pipe,
+            X_train=X_train,
+            y_train=y_train,
+            use_hyperparam_tuning=use_hyperparam_tuning,
+            use_kfold=use_kfold,
+            n_splits=n_splits,
+            n_iter_search=n_iter_search,
+            param_dist=param_dist,
+            random_state=random_state,
+            task=resolved_task,
+            scoring=scoring,
+            search_cv=search_cv,
+        )
+
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        joblib.dump(pipe, model_path)
+        print(f"Model saved to: {model_path}")
+
     y_pred_train = pipe.predict(X_train)
     y_pred_test = pipe.predict(X_test)
-
-    print("\nFinal performance on train/test split:")
-    _,_,_, = regression_metrics(y_train, y_pred_train, label="Train")
-    _,_,_, = regression_metrics(y_test, y_pred_test, label="Test")
-
-    # Save model
-    os.makedirs(os.path.dirname(model_path), exist_ok=True)
-    joblib.dump(pipe, model_path)
-    print(f"Model saved to: {model_path}")
+    _print_train_test_metrics(resolved_task, y_train, y_pred_train, y_test, y_pred_test)
 
     return pipe, X_train, X_test, y_train, y_test
+
 
 def evaluate_and_plot_parity(
     target,
@@ -261,56 +493,66 @@ def evaluate_and_plot_parity(
     y_pred_test,
     fig_size=(10, 8),
     metrics_fn=regression_metrics,
+    config=None,
 ):
-    """
-    Print regression metrics for train and test sets and plot a parity
-    (y_true vs. y_pred) scatter plot for the test set.
+    if config is None:
+        config = load_config()
 
-    Parameters
-    ----------
-    target : str
-        Name of the target variable (used in printed messages and plot title).
-    y_train, y_pred_train : array-like
-        True and predicted values for the training set.
-    y_test, y_pred_test : array-like
-        True and predicted values for the test set.
-    fig_size : tuple, optional
-        Figure size for the parity plot.
-    metrics_fn : callable, optional
-        Function to compute and print metrics, with signature
-        metrics_fn(y_true, y_pred, label="").
-    """
     print(f"\nPerformance for target: {target}")
     metrics_fn(y_train, y_pred_train, label="Train")
     metrics_fn(y_test, y_pred_test, label="Test")
 
+    plotting_cfg = config.get("plotting", {}) if config is not None else {}
+    font_size = plotting_cfg.get("font_size", FONT_SIZE)
+    colors = plotting_cfg.get("custom_colormap", {})
+    train_color = colors.get("colors", ["#8fbce3"])[0]
+    test_color = colors.get("colors", ["#e38f8f"])[-1]
+    annotation_color = colors.get("scatter", "#7FAFD9")
+
     plt.figure(figsize=fig_size)
-    plt.scatter(y_train, y_pred_train, label='Train Data', color='#8fbce3', alpha=0.6)
-    plt.scatter(y_test, y_pred_test, label='Test Data', color='#e38f8f', marker='D')
-    plt.plot([min(min(y_test),min(y_train)), max(max(y_test),max(y_train))], [min(min(y_test),min(y_train)), max(max(y_test),max(y_train))], '--', color='gray')
-    plt.xlabel(f'True Values', fontsize=FONT_SIZE)  
-    plt.ylabel(f'Predictions', fontsize=FONT_SIZE) 
-    plt.title(f'Parity Plot for {target}', fontsize=FONT_SIZE, fontweight='bold')
-    
-    r2_train,rmse_train,_, = regression_metrics(y_train, y_pred_train, label="Train", verbose=False)
-    r2_test,rmse_test,_, = regression_metrics(y_test, y_pred_test, label="Test", verbose=False)
-    plt.annotate(f'R$^2$ (Train)={r2_train:.2f}\nRMSE (Train)={rmse_train:.2f}',
-                xy=(0.95, 0.12), xycoords='axes fraction', ha='right', va='top',
-                fontsize=FONT_SIZE, color="#7FAFD9")
-    plt.annotate(f'R$^2$ (Test)={r2_test:.2f}\nRMSE (Test)={rmse_test:.2f}',
-                xy=(0.95, 0.12), xycoords='axes fraction', ha='right', va='bottom',
-                fontsize=FONT_SIZE, color='#e38f8f')
+    plt.scatter(y_train, y_pred_train, label="Train Data", color=train_color, alpha=0.6)
+    plt.scatter(y_test, y_pred_test, label="Test Data", color=test_color, marker="D")
+    plt.plot(
+        [min(min(y_test), min(y_train)), max(max(y_test), max(y_train))],
+        [min(min(y_test), min(y_train)), max(max(y_test), max(y_train))],
+        "--",
+        color="gray",
+    )
+    plt.xlabel("True Values", fontsize=font_size)
+    plt.ylabel("Predictions", fontsize=font_size)
+    plt.title(f"Parity Plot for {target}", fontsize=font_size, fontweight="bold")
+
+    r2_train, rmse_train, _ = regression_metrics(y_train, y_pred_train, label="Train", verbose=False)
+    r2_test, rmse_test, _ = regression_metrics(y_test, y_pred_test, label="Test", verbose=False)
+    plt.annotate(
+        f"R$^2$ (Train)={r2_train:.2f}\nRMSE (Train)={rmse_train:.2f}",
+        xy=(0.95, 0.12),
+        xycoords="axes fraction",
+        ha="right",
+        va="top",
+        fontsize=font_size,
+        color=annotation_color,
+    )
+    plt.annotate(
+        f"R$^2$ (Test)={r2_test:.2f}\nRMSE (Test)={rmse_test:.2f}",
+        xy=(0.95, 0.12),
+        xycoords="axes fraction",
+        ha="right",
+        va="bottom",
+        fontsize=font_size,
+        color=test_color,
+    )
 
     ax = plt.gca()
     ax.grid(False)
     ax.tick_params(
-        axis='both',
-        which='major',
-        direction='out',
+        axis="both",
+        which="major",
+        direction="out",
         length=6,
         width=1.5,
-        labelsize=FONT_SIZE,
-        colors='black',
+        labelsize=font_size,
+        colors="black",
         bottom=True,
         top=False,
         left=True,
@@ -319,7 +561,7 @@ def evaluate_and_plot_parity(
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_linewidth(1.5)
-        spine.set_edgecolor('black')
+        spine.set_edgecolor("black")
 
     plt.legend()
     plt.show()

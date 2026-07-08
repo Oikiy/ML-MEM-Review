@@ -89,7 +89,15 @@ def _load_lookup_table(lookup_source, source_name):
 
     if isinstance(lookup_source, str):
         try:
-            return pd.read_excel(lookup_source)
+            lower_path = lookup_source.lower()
+            if lower_path.endswith(".csv"):
+                return pd.read_csv(lookup_source)
+            if lower_path.endswith((".xls", ".xlsx")):
+                return pd.read_excel(lookup_source)
+            raise ValueError(
+                f"Unsupported lookup file format for {source_name}: {lookup_source}. "
+                "Only .csv, .xls, and .xlsx are supported."
+            )
         except FileNotFoundError as exc:
             raise FileNotFoundError(
                 f"Feature-engineering property file missing for {source_name}: {exc}"
@@ -172,8 +180,6 @@ def feature_engineering_from_lookups(df, lookup_specs, verbose=False):
 
 def feature_engineering(
     df,
-    CATION_PROP_PATH=None,
-    ANION_PROP_PATH=None,
     verbose=False,
     config=None,
 ):
@@ -187,114 +193,203 @@ def feature_engineering(
     Parameters
     ----------
     df : pandas.DataFrame
-        Main membrane dataset, containing at least the key columns
-        for monomers and ions, such as:
-        'Dope1_Monomer1_Name', 
-        'Dope2_Monomer1_Name', 
-        'S1_Cation', 'S1_Anion', 'S2_Cation', 'S2_Anion'.
-    CATION_PROP_PATH : str, optional
-        Path to Excel file with cation properties.
-        Must contain a column 'Cation' as key.
-        If not provided and config is present, loaded from config.
-    ANION_PROP_PATH : str, optional
-        Path to Excel file with anion properties.
-        Must contain a column 'Anion' as key.
-        If not provided and config is present, loaded from config.
+        Main dataframe with columns to enrich.
     verbose : bool, optional
         If True, prints detailed logging about missing columns and merges.
-    config : dict, optional
-        Configuration dictionary (from config_loader.load_config()).
-        If provided, paths are extracted from config when CATION_PROP_PATH 
-        or ANION_PROP_PATH are None.
+    config : dict
+        Configuration dictionary (from utl_config_loader.load_config()).
+        Preferred format is feature_engineering.lookups, where each entry is
+        a dict with:
+        - align_column (required): column in df to merge on.
+        - lookup_path (required): lookup table file path.
+        - lookup_key (optional): join key in lookup table. Defaults to align_column.
+        - lookup_prefix (optional): prefix for merged lookup columns.
+        Optionally supports feature_engineering.synthetic_feature for
+        config-driven synthetic columns using full equations.
 
     Returns
     -------
     pandas.DataFrame
-        Dataframe with additional descriptor columns for:
-        - Dope1/Dope2 monomer 1 and 2 (e.g., MW, atom counts, functional groups),
-        - solute 1 and solute 2 cations and anions (e.g., radius, charge).
+        Dataframe with aligned lookup properties merged in.
     """
-    
-    # Load paths from config if not explicitly provided
-    if config is not None:
-        if CATION_PROP_PATH is None:
-            project_root = config.get("_project_root", ".")
-            data_raw = config["project"]["paths"]["data_raw"]
-            CATION_PROP_PATH = os.path.join(
-                project_root, data_raw, config["data"]["cation_properties"]
-            )
-        if ANION_PROP_PATH is None:
-            project_root = config.get("_project_root", ".")
-            data_raw = config["project"]["paths"]["data_raw"]
-            ANION_PROP_PATH = os.path.join(
-                project_root, data_raw, config["data"]["anion_properties"]
-            )
-
-    # Optional config-driven lookup specifications for membrane context.
-    # This allows the membrane lookup mapping to be maintained in config.yaml.
-    if config is not None:
-        fe_cfg = config.get("feature_engineering", {})
-        cfg_lookup_specs = fe_cfg.get("lookup_specs")
-
-        if cfg_lookup_specs:
-            project_root = config.get("_project_root", ".")
-            data_raw = config["project"]["paths"]["data_raw"]
-
-            resolved_lookup_specs = []
-            for spec in cfg_lookup_specs:
-                resolved_spec = {
-                    "merge_key": spec["merge_key"],
-                    "lookup_key": spec["lookup_key"],
-                    "prefix": spec.get("prefix", ""),
-                    "source_name": spec.get("source_name", spec["merge_key"]),
-                }
-
-                # Prefer explicit lookup_source if provided, otherwise resolve from data_key.
-                if "lookup_source" in spec and spec["lookup_source"] is not None:
-                    resolved_spec["lookup_source"] = spec["lookup_source"]
-                elif "data_key" in spec:
-                    data_file = config["data"][spec["data_key"]]
-                    resolved_spec["lookup_source"] = os.path.join(
-                        project_root, data_raw, data_file
-                    )
-                else:
-                    raise ValueError(
-                        "Each lookup spec must define either 'lookup_source' or 'data_key'."
-                    )
-
-                resolved_lookup_specs.append(resolved_spec)
-
-            return feature_engineering_from_lookups(
-                df,
-                resolved_lookup_specs,
-                verbose=verbose,
-            )
-    
-    # Validate that paths are provided
-    if CATION_PROP_PATH is None or ANION_PROP_PATH is None:
+    if config is None:
         raise ValueError(
-            "CATION_PROP_PATH and ANION_PROP_PATH must be provided either as "
-            "explicit arguments or via config parameter."
+            "config must be provided. "
+            "Expected feature_engineering.lookups."
         )
-    # Membrane-context lookup specifications
-    lookup_specs = [
-        {
-            "merge_key": "S1_Cation",
-            "lookup_source": CATION_PROP_PATH,
-            "lookup_key": "Cation",
-            "prefix": "S1_",
-            "source_name": "df_cation_S1",
-        },
-        {
-            "merge_key": "S1_Anion",
-            "lookup_source": ANION_PROP_PATH,
-            "lookup_key": "Anion",
-            "prefix": "S1_",
-            "source_name": "df_anion_S1",
-        },
-    ]
 
-    return feature_engineering_from_lookups(df, lookup_specs, verbose=verbose)
+    fe_cfg = config.get("feature_engineering", {})
+    grouped_lookups = fe_cfg.get("lookups", [])
+
+    normalized_lookups = []
+
+    if not grouped_lookups:
+        raise ValueError(
+            "Missing feature_engineering config. Please define non-empty "
+            "feature_engineering.lookups."
+        )
+
+    if not isinstance(grouped_lookups, list):
+        raise ValueError(
+            "feature_engineering.lookups must be a list of lookup definitions."
+        )
+
+    for idx, lookup in enumerate(grouped_lookups):
+        if not isinstance(lookup, dict):
+            raise ValueError(
+                f"feature_engineering.lookups[{idx}] must be a dictionary."
+            )
+
+        align_column = lookup.get("align_column")
+        lookup_path = lookup.get("lookup_path")
+        lookup_key = lookup.get("lookup_key", align_column)
+        lookup_prefix = lookup.get("lookup_prefix", "")
+
+        if not align_column or not lookup_path:
+            raise ValueError(
+                "Each feature_engineering.lookups entry must include "
+                "non-empty align_column and lookup_path."
+            )
+
+        normalized_lookups.append(
+            {
+                "align_column": align_column,
+                "lookup_path": lookup_path,
+                "lookup_key": lookup_key,
+                "lookup_prefix": lookup_prefix,
+            }
+        )
+
+    project_root = config.get("_project_root", ".")
+    resolved_lookup_specs = []
+    for lookup in normalized_lookups:
+        align_column = lookup["align_column"]
+        resolved_path = lookup["lookup_path"]
+        if not os.path.isabs(resolved_path) and not resolved_path.startswith(("$", "~")):
+            resolved_path = os.path.join(project_root, resolved_path)
+        else:
+            resolved_path = os.path.expandvars(os.path.expanduser(resolved_path))
+
+        resolved_lookup_specs.append(
+            {
+                "merge_key": align_column,
+                "lookup_source": resolved_path,
+                "lookup_key": lookup["lookup_key"],
+                "prefix": lookup["lookup_prefix"],
+                "source_name": f"lookup_{align_column}",
+            }
+        )
+
+    if verbose:
+        configured_columns = [item["align_column"] for item in normalized_lookups]
+        print(
+            "Using config-driven feature engineering lookup specs for columns: "
+            f"{configured_columns}"
+        )
+
+    enriched_df = feature_engineering_from_lookups(df, resolved_lookup_specs, verbose=verbose)
+
+    synthetic_df = get_custom_synthetic_features(
+        enriched_df,
+        config=config,
+        verbose=verbose,
+    )
+    if not synthetic_df.empty:
+        enriched_df = pd.concat([enriched_df, synthetic_df], axis=1)
+
+    return enriched_df
+
+
+def get_custom_synthetic_features(df, feature_specs=None, config=None, verbose=False):
+    """
+    Build custom synthetic feature columns from arithmetic equations.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input dataframe containing source columns.
+    feature_specs : list[dict] or dict, optional
+        Synthetic feature definitions supplied directly.
+        Supported formats:
+        1) List of dictionaries with name and equation:
+           [{"name": "total_dope_mass", "equation": "Dope1_Monomer1_Mass + Dope1_Add1_Mass"}]
+        2) Dictionary mapping feature_name -> equation:
+           {"total_dope_mass": "Dope1_Monomer1_Mass + Dope1_Add1_Mass"}
+    config : dict, optional
+        If feature_specs is None, definitions are read from
+        config["feature_engineering"]["synthetic_feature"].
+        The same two formats above are supported.
+    verbose : bool, optional
+        If True, prints created feature names.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing only the newly created synthetic feature columns.
+
+    Raises
+    ------
+    ValueError
+        If definitions are malformed or an equation cannot be evaluated.
+    TypeError
+        If a computed synthetic feature is not numeric.
+    """
+    specs_obj = feature_specs
+    if specs_obj is None and config is not None:
+        specs_obj = config.get("feature_engineering", {}).get("synthetic_feature", [])
+
+    if specs_obj is None or specs_obj == [] or specs_obj == {}:
+        return pd.DataFrame(index=df.index)
+
+    normalized_specs = []
+
+    if isinstance(specs_obj, dict):
+        for feature_name, equation in specs_obj.items():
+            normalized_specs.append({"name": feature_name, "equation": equation})
+    elif isinstance(specs_obj, list):
+        for idx, spec in enumerate(specs_obj):
+            if not isinstance(spec, dict):
+                raise ValueError(f"synthetic_feature[{idx}] must be a dictionary.")
+            normalized_specs.append(spec)
+    else:
+        raise ValueError(
+            "synthetic_feature must be either a list of dictionaries or a dictionary "
+            "of feature_name -> equation mappings."
+        )
+
+    synthetic_df = pd.DataFrame(index=df.index)
+    for idx, spec in enumerate(normalized_specs):
+        feature_name = spec.get("name")
+        equation = spec.get("equation")
+
+        if not feature_name or not isinstance(feature_name, str):
+            raise ValueError(f"synthetic_feature[{idx}] must include a non-empty string 'name'.")
+        if equation is None or not isinstance(equation, str) or not equation.strip():
+            raise ValueError(
+                f"synthetic feature '{feature_name}' must include a non-empty string 'equation'."
+            )
+
+        try:
+            # Use DataFrame.eval so equations can reference columns directly.
+            result = df.eval(equation, engine="python")
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to evaluate equation for synthetic feature '{feature_name}': {equation}. "
+                f"Original error: {exc}"
+            ) from exc
+
+        if not pd.api.types.is_numeric_dtype(result):
+            raise TypeError(
+                f"Synthetic feature '{feature_name}' produced non-numeric values. "
+                "Please use arithmetic equations with numeric source columns."
+            )
+
+        synthetic_df[feature_name] = result
+
+    if verbose:
+        print("Created synthetic feature columns:", synthetic_df.columns.tolist())
+
+    return synthetic_df
 
 
 def remove_low_variance_columns(df, exclude_columns=None, variance_threshold=0.0):

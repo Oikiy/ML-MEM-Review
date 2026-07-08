@@ -1,20 +1,30 @@
-import pandas as pd
-import numpy as np
+from typing import Any, Optional, Sequence, Tuple
+
 import matplotlib.pyplot as plt
-import seaborn as sns
+import numpy as np
+import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.ticker import MaxNLocator
+
+from utl_config_loader import load_config
 
 FONT_SIZE = 20
-custom_cmap = LinearSegmentedColormap.from_list(
-    "my_palette",
-    ["#7FAFD9", "#FFF8EE", "#E38AAA"],
-)
 
-from typing import Sequence, Optional, Tuple
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
-import pandas as pd
+
+def _resolve_config(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    return load_config() if config is None else config
+
+
+def _get_plotting_cfg(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    return _resolve_config(config).get("plotting", {})
+
+
+def _build_custom_cmap(plotting_cfg: dict[str, Any]) -> LinearSegmentedColormap:
+    cmap_cfg = plotting_cfg.get("custom_colormap", {})
+    return LinearSegmentedColormap.from_list(
+        cmap_cfg.get("name", "my_palette"),
+        cmap_cfg.get("colors", ["#7FAFD9", "#FFF8EE", "#E38AAA"]),
+    )
 
 
 def plot_target_distributions(
@@ -29,6 +39,7 @@ def plot_target_distributions(
     edge_color: str = "#81858a",
     jitter_std: float = 0.03,
     xlim: Tuple[float, float] = (-0.6, 0.6),
+    config: Optional[dict[str, Any]] = None,
 ) -> Tuple[plt.Figure, np.ndarray]:
     """
     Plot violin + boxplots with overlaid scatter for a set of regression targets.
@@ -63,6 +74,10 @@ def plot_target_distributions(
     fig : matplotlib.figure.Figure
     axes : np.ndarray of matplotlib.axes.Axes
     """
+    plotting_cfg = _get_plotting_cfg(config)
+    font_size = plotting_cfg.get("font_size", FONT_SIZE)
+    plot_colors = plotting_cfg.get("colors", {})
+
     # Extract target data
     y_regression = df[target_columns]
 
@@ -76,9 +91,13 @@ def plot_target_distributions(
 
     # Default color schemes if none provided
     if colors is None:
-        colors = ['#25517e', '#4c7da1', '#cd7a69']
+        colors = plot_colors.get("boxplot", ["#25517e", "#4c7da1", "#cd7a69"])
     if violin_colors is None:
-        violin_colors = ['#cedae6', '#abc5d3', '#e9c2b3']
+        violin_colors = plot_colors.get("violin", ["#cedae6", "#abc5d3", "#e9c2b3"])
+    scatter_color = plot_colors.get("scatter", scatter_color)
+    median_color = plot_colors.get("median", median_color)
+    outlier_color = plot_colors.get("outlier", outlier_color)
+    edge_color = plot_colors.get("edge", edge_color)
 
     for i, column in enumerate(y_regression.columns):
         ax = axes[i]
@@ -139,9 +158,9 @@ def plot_target_distributions(
 
         # Axes formatting
         ax.set_xlim(*xlim)
-        ax.set_ylabel(column, fontsize=FONT_SIZE, fontweight='bold', color='#252525')
-        ax.set_xlabel('', fontsize=FONT_SIZE)
-        ax.tick_params(axis='both', which='major', labelsize=20, colors='#252525')
+        ax.set_ylabel(column, fontsize=font_size, fontweight='bold', color='#252525')
+        ax.set_xlabel('', fontsize=font_size)
+        ax.tick_params(axis='both', which='major', labelsize=font_size, colors='#252525')
         ax.set_xticks([])
 
         # Sparse y-ticks
@@ -158,7 +177,13 @@ def plot_target_distributions(
     return fig, axes
 
 
-def compute_and_plot_pearson_heatmap(df, threshold=0.5, fig_size=(12, 10)):
+def compute_and_plot_pearson_heatmap(
+    df,
+    threshold=None,
+    fig_size=(12, 10),
+    config: Optional[dict[str, Any]] = None,
+    show_annotations: Optional[bool] = None,
+):
     """
     Compute pairwise Pearson correlations and plot heatmap with correlation threshold filtering.
     
@@ -173,12 +198,24 @@ def compute_and_plot_pearson_heatmap(df, threshold=0.5, fig_size=(12, 10)):
         Correlation threshold (0-1). Only correlations with absolute value > threshold are displayed
     fig_size : tuple, default=(12, 10)
         Figure size for the heatmap.
+    show_annotations : bool, optional
+        Whether to draw numeric correlation annotations inside cells.
+        If None, this is chosen automatically based on matrix width.
 
     Returns:
     --------
     pandas.DataFrame
         Complete correlation matrix with all pairwise correlations
     """
+    plotting_cfg = _get_plotting_cfg(config)
+    data_analysis_cfg = _resolve_config(config).get("data_analysis", {})
+    font_size = plotting_cfg.get("font_size", FONT_SIZE)
+    if threshold is None:
+        thresholds = data_analysis_cfg.get("correlation_thresholds", [0.5])
+        threshold = thresholds[-1] if thresholds else 0.5
+    if fig_size is None:
+        fig_size = tuple(plotting_cfg.get("global_figure_size", (12, 10)))
+
     cols = df.columns
     n = len(cols)
     # Initialize correlation matrix with NaN values
@@ -199,13 +236,40 @@ def compute_and_plot_pearson_heatmap(df, threshold=0.5, fig_size=(12, 10)):
             corr_matrix.at[col_j, col_i] = corr
     
     # Plot heatmap with threshold filtering
+    try:
+        import seaborn as sns
+    except Exception as exc:
+        raise ImportError(
+            "seaborn is required for compute_and_plot_pearson_heatmap()."
+        ) from exc
+
+    # Use an explicit mask and adaptive annotation behavior for dense matrices.
+    corr_for_plot = corr_matrix.copy()
+    mask = corr_for_plot.abs() <= float(threshold)
+    n_cols = max(1, len(corr_for_plot.columns))
+    annot_font_size = min(font_size, max(6, int(240 / n_cols)))
+    if show_annotations is None:
+        # Default to showing annotations unless explicitly disabled in config.
+        show_annotations = bool(data_analysis_cfg.get("pearson_heatmap_show_annotations", True))
+
     fig, ax = plt.subplots(figsize=fig_size)
-    hm = sns.heatmap(corr_matrix.where(corr_matrix.abs() > threshold), annot=True, fmt=".2f",
-                     annot_kws={"size": 20}, cmap=custom_cmap, center=0, cbar_kws={"shrink": .8}, square=True,
-                     linewidths=.5, linecolor='black', ax=ax)
+    hm = sns.heatmap(
+        corr_for_plot,
+        mask=mask,
+        annot=bool(show_annotations),
+        fmt=".2f",
+        annot_kws={"size": annot_font_size, "color": "black"},
+        cmap=_build_custom_cmap(plotting_cfg),
+        center=0,
+        cbar_kws={"shrink": .8},
+        square=True,
+        linewidths=.5,
+        linecolor='black',
+        ax=ax,
+    )
     
-    ax.set_xticklabels(ax.get_xticklabels(), fontsize=FONT_SIZE, rotation=45, ha='right', fontfamily='Arial')
-    ax.set_yticklabels(ax.get_yticklabels(), fontsize=FONT_SIZE, rotation=0, fontfamily='Arial')
+    ax.set_xticklabels(ax.get_xticklabels(), fontsize=font_size, rotation=45, ha='right', fontfamily='Arial')
+    ax.set_yticklabels(ax.get_yticklabels(), fontsize=font_size, rotation=0, fontfamily='Arial')
 
     # Remove grid and tick marks
     ax.grid(False)
@@ -219,14 +283,14 @@ def compute_and_plot_pearson_heatmap(df, threshold=0.5, fig_size=(12, 10)):
 
     # Match colorbar style used in ellipse heatmap
     cbar = hm.collections[0].colorbar
-    cbar.set_label('Correlation', fontsize=FONT_SIZE, fontfamily='Arial')
-    cbar.ax.tick_params(labelsize=FONT_SIZE)
+    cbar.set_label('Correlation', fontsize=font_size, fontfamily='Arial')
+    cbar.ax.tick_params(labelsize=font_size)
     for label in cbar.ax.get_yticklabels():
         label.set_fontfamily('Arial')
     cbar.outline.set_linewidth(3)
     cbar.outline.set_edgecolor('black')
 
-    plt.title(f'Pairwise Pearson Correlation Heatmap > {threshold}', fontsize=FONT_SIZE, fontfamily='Arial', fontweight='bold')
+    plt.title(f'Pairwise Pearson Correlation Heatmap > {threshold}', fontsize=font_size, fontfamily='Arial', fontweight='bold')
     plt.tight_layout()
     plt.show()
     return corr_matrix

@@ -5,28 +5,394 @@ import joblib
 import pandas as pd
 import warnings
 from numbers import Number
+from pathlib import Path
+from typing import Any
+
+from matplotlib.colors import LinearSegmentedColormap
 try:
     from ax.api.client import Client
 except Exception:
     Client = None
-from matplotlib.colors import LinearSegmentedColormap
-custom_cmap = LinearSegmentedColormap.from_list(
-    "my_palette",
-    ["#7FAFD9", "#FFF8EE", "#E38AAA"]
-)
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DATA_PATH = os.path.join(PROJECT_ROOT, "data", "raw")
-MODEL_PATH = os.path.join(PROJECT_ROOT, "models")
-CODE_PATH = os.path.join(PROJECT_ROOT, "src")
-CATION_PROP_PATH = os.path.join(DATA_PATH, "cation_prop.xlsx")
-ANION_PROP_PATH = os.path.join(DATA_PATH, "anion_prop.xlsx")
+SRC_PATH = Path(__file__).resolve().parent
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
-if CODE_PATH not in sys.path:
-    sys.path.insert(0, CODE_PATH)
-
+from utl_config_loader import get_model_dir, get_optimization_config, load_config
 from utl_feateng import feature_engineering
 from utl_fileIO import file_io
+from utl_modelling import _resolve_model_path
+
+
+def _ax_client_json_path(client_path: str) -> str:
+    """Return a stable sidecar path for Ax JSON client snapshots."""
+    root, ext = os.path.splitext(client_path)
+    if ext.lower() == ".json":
+        return client_path
+    return f"{root}.ax_client.json"
+
+
+def _save_ax_state(client, results: list[dict], client_path: str, verbose: bool = False) -> None:
+    """Persist optimization state without crashing on non-pickleable Ax internals."""
+    client_dir = os.path.dirname(client_path)
+    client_name = os.path.basename(client_path)
+
+    # Always persist trial history in a lightweight payload.
+    file_io("save", "joblib", client_dir, client_name, data={"results": results})
+
+    json_path = _ax_client_json_path(client_path)
+    saved_json_client = False
+
+    # Prefer native Ax JSON serialization when available.
+    save_to_json = getattr(client, "save_to_json_file", None)
+    if callable(save_to_json):
+        for kwargs in ({"filepath": json_path}, {"file_path": json_path}, {"path": json_path}):
+            try:
+                save_to_json(**kwargs)
+                saved_json_client = True
+                break
+            except TypeError:
+                continue
+            except Exception as exc:
+                warnings.warn(
+                    f"Ax JSON save failed at {json_path}: {exc}",
+                    RuntimeWarning,
+                )
+                break
+
+    # Fallback: persist client JSON snapshot payload if method exists.
+    if not saved_json_client:
+        snapshot_fn = getattr(client, "to_json_snapshot", None)
+        if callable(snapshot_fn):
+            try:
+                snapshot = snapshot_fn()
+                file_io(
+                    "save",
+                    "json",
+                    os.path.dirname(json_path),
+                    os.path.basename(json_path),
+                    data={"client_snapshot": snapshot, "results": results},
+                )
+                saved_json_client = True
+            except Exception as exc:
+                warnings.warn(
+                    f"Ax snapshot fallback save failed at {json_path}: {exc}",
+                    RuntimeWarning,
+                )
+
+    if verbose:
+        print(f"Saved Ax trial history to: {client_path}")
+        if saved_json_client:
+            print(f"Saved Ax client snapshot to: {json_path}")
+
+
+def _load_ax_state(client_path: str):
+    """Load previously saved Ax client state and/or trial history."""
+    loaded_client = None
+    loaded_results = []
+
+    if os.path.exists(client_path):
+        try:
+            payload = file_io(
+                "load",
+                "joblib",
+                os.path.dirname(client_path),
+                os.path.basename(client_path),
+            )
+            if isinstance(payload, dict):
+                loaded_results = payload.get("results", [])
+                # Backward compatibility for historical payloads containing pickled clients.
+                loaded_client = payload.get("client")
+        except Exception as exc:
+            warnings.warn(
+                f"Failed to load Ax joblib state from {client_path}: {exc}",
+                RuntimeWarning,
+            )
+
+    if loaded_client is not None:
+        return loaded_client, loaded_results
+
+    json_path = _ax_client_json_path(client_path)
+    if not os.path.exists(json_path):
+        return loaded_client, loaded_results
+
+    load_from_json = getattr(Client, "load_from_json_file", None)
+    if callable(load_from_json):
+        for kwargs in ({"filepath": json_path}, {"file_path": json_path}, {"path": json_path}):
+            try:
+                loaded_client = load_from_json(**kwargs)
+                return loaded_client, loaded_results
+            except TypeError:
+                continue
+            except Exception as exc:
+                warnings.warn(
+                    f"Failed to load Ax JSON client from {json_path}: {exc}",
+                    RuntimeWarning,
+                )
+                break
+
+    try:
+        payload = file_io(
+            "load",
+            "json",
+            os.path.dirname(json_path),
+            os.path.basename(json_path),
+        )
+    except Exception as exc:
+        warnings.warn(
+            f"Failed to load Ax JSON payload from {json_path}: {exc}",
+            RuntimeWarning,
+        )
+        return loaded_client, loaded_results
+
+    if isinstance(payload, dict):
+        loaded_results = loaded_results or payload.get("results", [])
+        snapshot = payload.get("client_snapshot")
+    else:
+        snapshot = payload
+
+    if snapshot is None:
+        return loaded_client, loaded_results
+
+    load_snapshot = getattr(Client, "load_from_json_snapshot", None)
+    if callable(load_snapshot):
+        try:
+            loaded_client = load_snapshot(snapshot)
+            return loaded_client, loaded_results
+        except Exception as exc:
+            warnings.warn(
+                f"Failed to load Ax snapshot via load_from_json_snapshot: {exc}",
+                RuntimeWarning,
+            )
+
+    from_snapshot = getattr(Client, "from_json_snapshot", None)
+    if callable(from_snapshot):
+        try:
+            loaded_client = from_snapshot(snapshot)
+        except Exception as exc:
+            warnings.warn(
+                f"Failed to load Ax snapshot via from_json_snapshot: {exc}",
+                RuntimeWarning,
+            )
+
+    return loaded_client, loaded_results
+
+
+def build_ax_search_space(opt_cfg: dict[str, Any], choice_param_cls, range_param_cls) -> list:
+    """Build Ax search-space parameter configs from optimization config."""
+    search_space_parameters = []
+
+    for param_cfg in opt_cfg.get("search_space", []):
+        param_type = param_cfg.get("type")
+        if param_type == "choice":
+            search_space_parameters.append(
+                choice_param_cls(
+                    name=param_cfg["name"],
+                    parameter_type="str",
+                    values=param_cfg["values"],
+                    is_ordered=param_cfg.get("is_ordered", False),
+                )
+            )
+        elif param_type == "range":
+            search_space_parameters.append(
+                range_param_cls(
+                    name=param_cfg["name"],
+                    parameter_type="float",
+                    bounds=tuple(param_cfg["bounds"]),
+                )
+            )
+
+    return search_space_parameters
+
+
+def get_ax_constant_parameters(opt_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return fixed optimization context parameters from config."""
+    return opt_cfg.get("constant_parameters", {})
+
+
+def _get_ax_computed_parameters(opt_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return computed optimization parameters from config."""
+    computed = opt_cfg.get("computed_parameters", []) or []
+    if not isinstance(computed, list):
+        raise ValueError("optimization.computed_parameters must be a list.")
+    return computed
+
+
+def _apply_ax_computed_parameters(
+    combined_params: dict[str, Any],
+    opt_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate and apply config-driven computed parameters in order."""
+    computed_defs = _get_ax_computed_parameters(opt_cfg)
+    if not computed_defs:
+        return combined_params
+
+    result = dict(combined_params)
+
+    for index, item in enumerate(computed_defs):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"optimization.computed_parameters[{index}] must be a dictionary."
+            )
+
+        name = item.get("name")
+        equation = item.get("equation")
+        if not name or not isinstance(name, str):
+            raise ValueError(
+                "Each optimization.computed_parameters entry must define a non-empty string 'name'."
+            )
+        if equation is None or not isinstance(equation, str) or not equation.strip():
+            raise ValueError(
+                f"optimization.computed_parameters entry '{name}' must define a non-empty string 'equation'."
+            )
+
+        try:
+            evaluated = pd.DataFrame([result]).eval(equation, engine="python")
+        except Exception as exc:
+            raise ValueError(
+                "Failed to evaluate optimization.computed_parameters equation for "
+                f"'{name}': {equation}. Available variables: {sorted(result.keys())}. "
+                f"Original error: {exc}"
+            ) from exc
+
+        if len(evaluated) != 1:
+            raise ValueError(
+                f"Computed parameter equation for '{name}' did not evaluate to one value: {equation}"
+            )
+
+        value = float(evaluated.iloc[0])
+
+        min_value = item.get("min_value")
+        if min_value is not None:
+            value = max(float(min_value), value)
+
+        max_value = item.get("max_value")
+        if max_value is not None:
+            value = min(float(max_value), value)
+
+        result[name] = value
+
+    return result
+
+
+def _validate_oracle_pre_feature_engineering_inputs(
+    df_raw: pd.DataFrame,
+    config: dict,
+) -> None:
+    """Validate required raw-input columns before feature engineering."""
+    if df_raw.empty:
+        raise ValueError("Raw oracle dataframe is empty before feature engineering.")
+
+    missing_columns = set()
+
+    fe_cfg = config.get("feature_engineering", {}) if config is not None else {}
+    lookup_specs = fe_cfg.get("lookups", []) or []
+    for index, lookup in enumerate(lookup_specs):
+        if not isinstance(lookup, dict):
+            raise ValueError(f"feature_engineering.lookups[{index}] must be a dictionary.")
+        align_column = lookup.get("align_column")
+        if align_column and align_column not in df_raw.columns:
+            missing_columns.add(str(align_column))
+
+    synthetic_specs = fe_cfg.get("synthetic_feature", []) or []
+    if isinstance(synthetic_specs, dict):
+        synthetic_specs = [
+            {"name": feature_name, "equation": equation}
+            for feature_name, equation in synthetic_specs.items()
+        ]
+    if isinstance(synthetic_specs, list):
+        for index, spec in enumerate(synthetic_specs):
+            if not isinstance(spec, dict):
+                raise ValueError(
+                    f"feature_engineering.synthetic_feature[{index}] must be a dictionary."
+                )
+            feature_name = spec.get("name", f"synthetic_feature_{index}")
+            equation = spec.get("equation")
+            if equation is None or not isinstance(equation, str) or not equation.strip():
+                raise ValueError(
+                    f"Synthetic feature '{feature_name}' must define a non-empty string equation."
+                )
+            try:
+                pd.DataFrame([df_raw.iloc[0].to_dict()]).eval(equation, engine="python")
+            except Exception as exc:
+                raise ValueError(
+                    "Raw oracle dataframe cannot satisfy synthetic feature equation "
+                    f"for '{feature_name}': {equation}. Available columns: "
+                    f"{sorted(df_raw.columns.tolist())}. Original error: {exc}"
+                ) from exc
+
+    if missing_columns:
+        raise KeyError(
+            "Raw oracle dataframe is missing required columns before feature engineering: "
+            f"{sorted(missing_columns)}. Available columns: {sorted(df_raw.columns.tolist())}"
+        )
+
+
+def _extract_expected_input_columns(pipe, model_name: str) -> list[str]:
+    """Infer model input columns from a fitted pipeline/preprocessor."""
+    preprocess = pipe.named_steps.get("preprocess", None)
+    if preprocess is not None and hasattr(preprocess, "feature_names_in_"):
+        return list(preprocess.feature_names_in_)
+    if hasattr(pipe, "feature_names_in_"):
+        return list(pipe.feature_names_in_)
+    raise ValueError(
+        f"Could not infer input feature columns from pipeline for {model_name}. "
+        "Expected a fitted pipeline with feature_names_in_."
+    )
+
+
+def _validate_oracle_post_feature_engineering_inputs(
+    engineered_df: pd.DataFrame,
+    model_pipelines: dict[str, Any],
+) -> dict[str, list[str]]:
+    """Validate engineered features against model pipeline requirements."""
+    expected_columns_by_model = {}
+    missing_by_model = {}
+
+    for model_name, pipeline in model_pipelines.items():
+        expected_columns = _extract_expected_input_columns(pipeline, model_name)
+        expected_columns_by_model[model_name] = expected_columns
+        missing_columns = [
+            column_name
+            for column_name in expected_columns
+            if column_name not in engineered_df.columns
+        ]
+        if missing_columns:
+            missing_by_model[model_name] = missing_columns
+
+    if missing_by_model:
+        error_parts = [
+            "Missing required input features for Ax oracle model inference.",
+        ]
+        for model_name, missing_columns in sorted(missing_by_model.items()):
+            error_parts.append(
+                f"{model_name} model missing {len(missing_columns)} feature(s): {missing_columns}"
+            )
+        error_parts.append(
+            f"Available engineered features ({len(engineered_df.columns)}): {sorted(engineered_df.columns.tolist())}"
+        )
+        raise KeyError(" | ".join(error_parts))
+
+    return expected_columns_by_model
+
+
+def _get_oracle_norm_dict(opt_cfg: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """Build oracle normalization ranges keyed by original metric names."""
+    norm_dict: dict[str, tuple[float, float]] = {}
+    for objective_cfg in _get_objective_configs(opt_cfg):
+        metric_key = objective_cfg.get("original_name") or objective_cfg["name"]
+        norm_min = objective_cfg.get("normalization_min")
+        norm_max = objective_cfg.get("normalization_max")
+
+        if norm_min is None or norm_max is None:
+            raise ValueError(
+                "Each optimization objective must define normalization_min and "
+                f"normalization_max. Missing on objective: {objective_cfg.get('name')}"
+            )
+
+        norm_dict[str(metric_key)] = (float(norm_min), float(norm_max))
+
+    return norm_dict
 
 def _normalize(value: float, norm_dict: dict, key: str) -> float:
     """
@@ -48,26 +414,152 @@ def _normalize(value: float, norm_dict: dict, key: str) -> float:
     return (float(value) - vmin) / (vmax - vmin)
 
 
-def _scalar_objective(pwp_norm: float, rej_norm: float, weight_dict: dict) -> float:
-    """
-    Combine normalized permeability and rejection into a single scalar objective.
+def _normalize_objective_direction(direction: str | None) -> str:
+    normalized = str(direction or "maximize").strip().lower()
+    if normalized not in {"maximize", "minimize"}:
+        raise ValueError(
+            "Objective direction must be 'maximize' or 'minimize', "
+            f"got {direction}"
+        )
+    return normalized
 
-    Parameters
-    ----------
-    pwp_norm : float
-        Normalized pure water permeability.
-    rej_norm : float
-        Normalized solute1 rejection.
 
-    Returns
-    -------
-    float
-        Scalarized objective in [0, 1], larger is better.
-    """
-    return (
-        weight_dict["PureWaterPermeability"] * pwp_norm
-        + weight_dict["solute1Rejection"] * rej_norm
+def _get_objective_configs(opt_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    objective_cfgs = opt_cfg.get("objectives", []) or []
+    if not objective_cfgs:
+        return []
+
+    normalized_cfgs = []
+    for objective_cfg in objective_cfgs:
+        objective_cfg = dict(objective_cfg)
+        objective_name = objective_cfg.get("name")
+        if not objective_name:
+            raise ValueError("Each optimization objective must define a 'name'")
+        objective_cfg["direction"] = _normalize_objective_direction(
+            objective_cfg.get("direction")
+        )
+        normalized_cfgs.append(objective_cfg)
+    return normalized_cfgs
+
+
+def _get_objective_direction_map(opt_cfg: dict[str, Any]) -> dict[str, str]:
+    direction_map = {}
+    for objective_cfg in _get_objective_configs(opt_cfg):
+        direction = objective_cfg["direction"]
+        objective_name = objective_cfg["name"]
+        direction_map[objective_name] = direction
+
+        original_name = objective_cfg.get("original_name")
+        if original_name:
+            direction_map[original_name] = direction
+    return direction_map
+
+
+def _orient_value_for_objective_direction(value: float, direction: str) -> float:
+    return float(value) if direction == "maximize" else -float(value)
+
+
+def _get_scalarized_objective_config(
+    opt_cfg: dict[str, Any],
+    require_equation: bool = False,
+) -> dict[str, Any]:
+    scalarized_cfg = dict(opt_cfg.get("scalarized_objective", {}) or {})
+    scalarized_cfg.setdefault("name", "scalarizedobjective")
+
+    equation = scalarized_cfg.get("equation")
+    if require_equation:
+        if equation is None or not isinstance(equation, str) or not equation.strip():
+            raise ValueError(
+                "Scalarized optimization requires a non-empty "
+                "optimization.scalarized_objective.equation in config.yaml."
+            )
+
+    return scalarized_cfg
+
+
+def _build_scalarized_objective_context(
+    metric_values: dict[str, float],
+    opt_cfg: dict[str, Any],
+    original_metric_values: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Build objective-space and raw/original aliases for scalarized equations."""
+    context = {}
+    objective_cfgs = _get_objective_configs(opt_cfg)
+    objective_cfg_by_name = {cfg["name"]: cfg for cfg in objective_cfgs}
+    original_metric_values = {
+        key: float(value) for key, value in (original_metric_values or {}).items()
+    }
+
+    for metric_name, metric_value in metric_values.items():
+        numeric_value = float(metric_value)
+        objective_cfg = objective_cfg_by_name.get(metric_name, {})
+        direction = objective_cfg.get("direction", "maximize")
+        original_name = objective_cfg.get("original_name")
+        oriented_value = _orient_value_for_objective_direction(numeric_value, direction)
+
+        context[metric_name] = numeric_value
+        context[f"objective_{metric_name}"] = numeric_value
+        context[f"opt_{metric_name}"] = oriented_value
+
+        if original_name and original_name in original_metric_values:
+            raw_value = original_metric_values[original_name]
+            raw_oriented_value = _orient_value_for_objective_direction(raw_value, direction)
+            context.setdefault(original_name, raw_value)
+            context[f"raw_{original_name}"] = raw_value
+            context[f"pred_{original_name}"] = raw_value
+            context[f"opt_raw_{original_name}"] = raw_oriented_value
+
+    return context
+
+
+def _validate_scalarized_objective_config(opt_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Validate scalarized objective config early using placeholder metrics."""
+    scalarized_cfg = _get_scalarized_objective_config(opt_cfg, require_equation=True)
+    placeholder_metric_values = {}
+    placeholder_original_metric_values = {}
+
+    for index, objective_cfg in enumerate(_get_objective_configs(opt_cfg), start=1):
+        placeholder_metric_values[objective_cfg["name"]] = float(index)
+        original_name = objective_cfg.get("original_name")
+        if original_name:
+            placeholder_original_metric_values[original_name] = float(index) * 10.0
+
+    _evaluate_scalarized_objective_from_config(
+        metric_values=placeholder_metric_values,
+        opt_cfg=opt_cfg,
+        original_metric_values=placeholder_original_metric_values,
     )
+    return scalarized_cfg
+
+
+def _evaluate_scalarized_objective_from_config(
+    metric_values: dict[str, float],
+    opt_cfg: dict[str, Any],
+    original_metric_values: dict[str, float] | None = None,
+) -> float:
+    """Evaluate the scalarized objective from config."""
+    scalarized_cfg = _get_scalarized_objective_config(opt_cfg, require_equation=True)
+    equation = scalarized_cfg["equation"]
+    context = _build_scalarized_objective_context(
+        metric_values,
+        opt_cfg,
+        original_metric_values=original_metric_values,
+    )
+    try:
+        result = pd.DataFrame([context]).eval(equation, engine="python")
+    except Exception as exc:
+        raise ValueError(
+            "Failed to evaluate optimization.scalarized_objective.equation: "
+            f"{equation}. Available variables: {sorted(context.keys())}. "
+            f"Original error: {exc}"
+        ) from exc
+
+    if len(result) != 1:
+        raise ValueError(
+            "Scalarized objective equation must evaluate to exactly one scalar value. "
+            f"Got result length {len(result)} for equation: {equation}"
+        )
+    return float(result.iloc[0])
 
 
 def _normalize_optimization_mode(optimization_mode: str) -> str:
@@ -80,16 +572,61 @@ def _normalize_optimization_mode(optimization_mode: str) -> str:
     return mode
 
 
-def _build_optimization_config(optimization_mode: str, objective_name: str) -> dict:
+def _build_optimization_config(
+    optimization_mode: str,
+    objective_name: str,
+    opt_cfg: dict[str, Any] | None = None,
+) -> dict:
     mode = _normalize_optimization_mode(optimization_mode)
     if mode == "scalarized":
         return {"objective": objective_name}
+
+    opt_cfg = opt_cfg or {}
+    objective_terms = []
+    for objective_cfg in _get_objective_configs(opt_cfg):
+        objective_metric_name = objective_cfg["name"]
+        direction = objective_cfg["direction"]
+        if direction == "minimize":
+            objective_terms.append(f"-{objective_metric_name}")
+        else:
+            objective_terms.append(objective_metric_name)
+
+    if objective_terms:
+        return {"objective": ",".join(objective_terms)}
     return {"objective": "normPureWaterPermeability,solute1Rejection"}
 
 
-def _build_multiobjective_thresholds(objective_thresholds=None):
+def _build_multiobjective_thresholds(opt_cfg: dict[str, Any], objective_thresholds=None):
     # Provide explicit thresholds to avoid Ax inferring unstable defaults across runs.
     if objective_thresholds is None:
+        thresholds = []
+        for objective_cfg in _get_objective_configs(opt_cfg):
+            threshold = objective_cfg.get("threshold")
+            if threshold in {None, ""}:
+                default_operator = ">=" if objective_cfg["direction"] == "maximize" else "<="
+                thresholds.append(f"{objective_cfg['name']}{default_operator}0.0")
+                continue
+
+            if isinstance(threshold, Number):
+                default_operator = ">=" if objective_cfg["direction"] == "maximize" else "<="
+                thresholds.append(f"{objective_cfg['name']}{default_operator}{float(threshold)}")
+                continue
+
+            threshold_str = str(threshold).strip()
+            if objective_cfg["name"] in threshold_str:
+                thresholds.append(threshold_str)
+                continue
+
+            if threshold_str[0].isdigit() or threshold_str[0] in {".", "-"}:
+                default_operator = ">=" if objective_cfg["direction"] == "maximize" else "<="
+                thresholds.append(f"{objective_cfg['name']}{default_operator}{threshold_str}")
+                continue
+
+            thresholds.append(f"{objective_cfg['name']}{threshold_str}")
+
+        if thresholds:
+            return thresholds
+
         return [
             "normPureWaterPermeability>=0.0",
             "solute1Rejection>=0.0",
@@ -97,15 +634,71 @@ def _build_multiobjective_thresholds(objective_thresholds=None):
     return list(objective_thresholds)
 
 
+def _load_required_oracle_pipelines(
+    model_path: str,
+    config: dict,
+    required_metric_keys: list[str] | None = None,
+) -> dict[str, Any]:
+    """Load all required surrogate pipelines for oracle inference."""
+    modeling_cfg = config.get("modeling", {}) if config is not None else {}
+    selected_model_name = modeling_cfg.get("model_selection", "extratrees")
+    model_filename_pattern = modeling_cfg.get(
+        "model_filename_pattern", "{target}_{model}_{task}.pkl"
+    )
+
+    # Metric keys can be mapped to model target names via config override.
+    default_metric_to_target = {
+        "PureWaterPermeability": "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}",
+        "solute1Rejection": "solute1_Rejection",
+    }
+    metric_to_target_overrides = modeling_cfg.get("oracle_model_targets", {}) or {}
+
+    if required_metric_keys is None:
+        required_metric_keys = list(default_metric_to_target.keys())
+
+    metric_to_target = {
+        metric_key: metric_to_target_overrides.get(
+            metric_key,
+            default_metric_to_target.get(metric_key, metric_key),
+        )
+        for metric_key in required_metric_keys
+    }
+
+    metric_to_model_path = {}
+    for metric_key, target_name in metric_to_target.items():
+        metric_to_model_path[metric_key] = _resolve_model_path(
+            model_dir=model_path,
+            model_filename_pattern=model_filename_pattern,
+            target=target_name,
+            task="regression",
+            model=selected_model_name,
+        )
+
+    missing_model_paths = [
+        model_file
+        for model_file in metric_to_model_path.values()
+        if not os.path.exists(model_file)
+    ]
+    if missing_model_paths:
+        available_pickles = (
+            sorted([f for f in os.listdir(model_path) if f.lower().endswith(".pkl")])
+            if os.path.isdir(model_path)
+            else []
+        )
+        raise FileNotFoundError(
+            "Missing required surrogate model file(s) for Ax oracle: "
+            f"{missing_model_paths}. Required metric->target mapping: {metric_to_target}. "
+            f"Available .pkl files in model_path: {available_pickles}"
+        )
+
+    return {
+        metric_key: joblib.load(model_file)
+        for metric_key, model_file in metric_to_model_path.items()
+    }
+
+## TODO: Consider refactoring the following functions to a separate module for clarity and maintainability. Remove membrane context
 def oracle_from_params(
     params: dict,
-    constant_params: dict,
-    norm_dict: dict,
-    weight_dict: dict,
-    cation_path: str = None,
-    anion_path: str = None,
-    model_path: str = None,
-    optimization_mode: str = "scalarized",
     config: dict = None,
 ) -> dict:
     """
@@ -115,22 +708,9 @@ def oracle_from_params(
     ----------
     params : dict
         Proposed parameter values from Ax optimizer.
-    constant_params : dict
-        Fixed context parameters (e.g., solvent type, solute identity).
-    norm_dict : dict
-        Normalization ranges for objectives.
-    weight_dict : dict
-        Weighting for multi-objective scalarization.
-    cation_path : str, optional
-        Path to cation properties file. If None, loaded from config.
-    anion_path : str, optional
-        Path to anion properties file. If None, loaded from config.
-    model_path : str, optional
-        Path to models directory. If None, loaded from config.
-    optimization_mode : str
-        'scalarized' or 'multiobjective'.
     config : dict, optional
-        Configuration dictionary. Used to derive paths if not explicitly provided.
+        Configuration dictionary used to derive optimization constants,
+        normalization ranges, mode, and model paths.
     
     Returns
     -------
@@ -138,148 +718,111 @@ def oracle_from_params(
         Predicted objective values keyed by objective name.
     """
     
-    mode = _normalize_optimization_mode(optimization_mode)
-    
-    # Load paths from config if not explicitly provided
-    if config is not None:
-        if cation_path is None:
-            project_root = config.get("_project_root", ".")
-            data_raw = config["project"]["paths"]["data_raw"]
-            cation_path = os.path.join(
-                project_root, data_raw, config["data"]["cation_properties"]
-            )
-        if anion_path is None:
-            project_root = config.get("_project_root", ".")
-            data_raw = config["project"]["paths"]["data_raw"]
-            anion_path = os.path.join(
-                project_root, data_raw, config["data"]["anion_properties"]
-            )
-        if model_path is None:
-            project_root = config.get("_project_root", ".")
-            model_path = os.path.join(project_root, config["project"]["paths"]["models"])
-    
-    # Use global MODEL_PATH if provided (backward compatibility)
-    if model_path is None:
-        try:
-            model_path = MODEL_PATH
-        except NameError:
-            raise ValueError(
-                "model_path must be provided either as argument, via config, or as global MODEL_PATH."
-            )
-    
-    # Validate that paths are available
-    if cation_path is None or anion_path is None:
+    if config is None:
+        config = load_config()
+
+    opt_cfg = get_optimization_config(config)
+    objective_cfgs = _get_objective_configs(opt_cfg)
+    if not objective_cfgs:
         raise ValueError(
-            "cation_path and anion_path must be provided either as arguments or via config."
+            "optimization.objectives must define at least one objective for oracle inference."
         )
 
-    # 1) Defaults for missing recipe/test variables (Constant or not included in search space).
-    # Merge Ax parameters with defaults (Ax parameters override defaults).
+    optimization_mode = opt_cfg.get("mode", "scalarized")
+    mode = _normalize_optimization_mode(optimization_mode)
+    model_path = get_model_dir(config)
+    constant_params = get_ax_constant_parameters(opt_cfg)
+    norm_dict = _get_oracle_norm_dict(opt_cfg)
+    required_metric_keys = list(
+        dict.fromkeys(
+            [
+                objective_cfg.get("original_name") or objective_cfg["name"]
+                for objective_cfg in objective_cfgs
+            ]
+        )
+    )
+
+    # 1) Merge Ax parameters with fixed defaults (Ax parameters override defaults).
     combined = {**constant_params, **params}
 
-    # 2) Compute implied solvent mass fractions so each dope is approximately mass-balanced.
-    # Updated column names to match the rest of the codebase:
-    combined["Dope1_Solvent1_Mass"] = max(
-        0.0,
-        1.0
-        - combined["Dope1_Monomer1_Mass"]
-        - combined["Dope1_Add1_Mass"]
-        - combined.get("Dope1_Monomer2_Mass", 0.0)
-        - combined.get("Dope1_Solvent2_Mass", 0.0)
-        - combined.get("Dope1_Add2_Mass", 0.0),
-    )
-    combined["Dope2_Solvent1_Mass"] = max(
-        0.0,
-        1.0
-        - combined["Dope2_Monomer1_Mass"]
-        - combined.get("Dope2_Monomer2_Mass", 0.0)
-        - combined.get("Dope2_Solvent2_Mass", 0.0)
-        - combined.get("Dope2_Add_Mass", 0.0),
-    )
+    # 2) Apply config-driven computed parameters (e.g., mass-balance solvent fractions).
+    combined = _apply_ax_computed_parameters(combined, opt_cfg)
 
     # 3) Build one-row DataFrame for model inference and apply feature engineering to enrich with descriptors.
     X_raw = pd.DataFrame([combined])
+    _validate_oracle_pre_feature_engineering_inputs(
+        df_raw=X_raw,
+        config=config,
+    )
+
     x_raw_enriched = feature_engineering(
         X_raw,
-        CATION_PROP_PATH=cation_path,
-        ANION_PROP_PATH=anion_path,
         verbose=False,
+        config=config,
     )
 
 
     # 4) Predict with pre-trained models.
-    # Resolve from project-level model_path so loading is independent of current working directory.
-    pwp_model_path = os.path.join(
-        model_path,
-        "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}_extratrees.pkl",
-    )
-    rej_model_path = os.path.join(
-        model_path,
-        "solute1_Rejection_extratrees.pkl",
+    # Load all required models by iterating expected metric keys.
+    model_pipelines = _load_required_oracle_pipelines(
+        model_path=model_path,
+        config=config,
+        required_metric_keys=required_metric_keys,
     )
 
-    pipe_pwp = joblib.load(pwp_model_path)
-    pipe_rej = joblib.load(rej_model_path)
-
-    # Infer expected input columns directly from fitted preprocessors.
-    # This removes the need for manually maintained feature_cols_* lists.
-    def _extract_expected_input_columns(pipe, model_name: str):
-        preprocess = pipe.named_steps.get("preprocess", None)
-        if preprocess is not None and hasattr(preprocess, "feature_names_in_"):
-            return list(preprocess.feature_names_in_)
-        if hasattr(pipe, "feature_names_in_"):
-            return list(pipe.feature_names_in_)
-        raise ValueError(
-            f"Could not infer input feature columns from pipeline for {model_name}. "
-            "Expected a fitted pipeline with feature_names_in_."
+    missing_prediction_keys = [
+        key for key in required_metric_keys if key not in model_pipelines
+    ]
+    if missing_prediction_keys:
+        raise KeyError(
+            "Missing required oracle model keys for prediction: "
+            f"{missing_prediction_keys}. Loaded keys: {sorted(model_pipelines.keys())}"
         )
 
-    feature_cols_pwp = _extract_expected_input_columns(pipe_pwp, "PureWaterPermeability")
-    feature_cols_rej = _extract_expected_input_columns(pipe_rej, "solute1Rejection")
-
-    # Validate required columns exist in current candidate row before prediction.
-    missing_pwp = [c for c in feature_cols_pwp if c not in x_raw_enriched.columns]
-    missing_rej = [c for c in feature_cols_rej if c not in x_raw_enriched.columns]
-    if missing_pwp:
-        raise KeyError(f"Missing columns for PWP model input: {missing_pwp}")
-    if missing_rej:
-        raise KeyError(f"Missing columns for rejection model input: {missing_rej}")
-
-    # Keep exact training column order for stable inference.
-    X_pwp = x_raw_enriched.reindex(columns=feature_cols_pwp)
-    X_rej = x_raw_enriched.reindex(columns=feature_cols_rej)
-
-    pwp_pred = pipe_pwp.predict(X_pwp)[0]
-    rej_pred = pipe_rej.predict(X_rej)[0]
+    expected_columns_by_model = _validate_oracle_post_feature_engineering_inputs(
+        engineered_df=x_raw_enriched,
+        model_pipelines={
+            metric_key: model_pipelines[metric_key]
+            for metric_key in required_metric_keys
+        },
+    )
+    raw_predictions = {}
+    for metric_key in required_metric_keys:
+        feature_cols = expected_columns_by_model[metric_key]
+        X_metric = x_raw_enriched.reindex(columns=feature_cols)
+        raw_predictions[metric_key] = float(model_pipelines[metric_key].predict(X_metric)[0])
 
     # 5) Normalize and scalarize.
-    pwp_norm = _normalize(pwp_pred, norm_dict, "PureWaterPermeability")
-    rej_norm = _normalize(rej_pred, norm_dict, "solute1Rejection")
-    scalar = _scalar_objective(pwp_norm, rej_norm, weight_dict)
-
-    metrics = {
-        "normPureWaterPermeability": pwp_norm,
-        "solute1Rejection": rej_norm,
-    }
+    metrics = {}
+    for objective_cfg in objective_cfgs:
+        objective_name = objective_cfg["name"]
+        metric_key = objective_cfg.get("original_name") or objective_name
+        if metric_key not in raw_predictions:
+            raise KeyError(
+                "Missing oracle prediction for objective metric key "
+                f"'{metric_key}' (objective '{objective_name}'). "
+                f"Available prediction keys: {sorted(raw_predictions.keys())}"
+            )
+        metrics[objective_name] = _normalize(raw_predictions[metric_key], norm_dict, metric_key)
 
     if mode == "scalarized":
-        metrics["scalarizedobjective"] = scalar
+        scalarized_cfg = _get_scalarized_objective_config(opt_cfg, require_equation=True)
+        scalarized_metric_name = scalarized_cfg["name"]
+        scalar = _evaluate_scalarized_objective_from_config(
+            metric_values=metrics,
+            opt_cfg=opt_cfg,
+            original_metric_values=raw_predictions,
+        )
+        metrics[scalarized_metric_name] = scalar
 
     return metrics
 
 def run_ax_optimization(
     search_space_parameters,
     oracle_from_params,
-    constant_params,
-    norm_dict,
-    weight_dict,
-    cation_path,
-    anion_path,
-    optimization_mode="scalarized",
+    config=None,
     experiment_name="NF_Inverse_Design_Tutorial",
     experiment_description="Toy inverse design of NF IP membrane recipe",
-    objective_name="scalarizedobjective",
-    objective_thresholds=None,
     sobol_init=5,
     n_trials=20,
     trial_error=0.01,
@@ -289,8 +832,6 @@ def run_ax_optimization(
     force_rebuild=False,
     save_every_trials=None,
     return_trial_df: bool = False,
-    model_path=None,
-    config=None,
 ):
     if Client is None:
         raise ImportError(
@@ -303,26 +844,51 @@ def run_ax_optimization(
         if not isinstance(save_every_trials, int) or save_every_trials <= 0:
             raise ValueError("save_every_trials must be a positive integer or None")
 
+    if config is None:
+        config = load_config()
+
+    opt_cfg = get_optimization_config(config)
+
+    optimization_mode = opt_cfg.get("mode", "scalarized")
+
+    if _normalize_optimization_mode(optimization_mode) == "scalarized":
+        scalarized_cfg = _validate_scalarized_objective_config(opt_cfg)
+    else:
+        scalarized_cfg = _get_scalarized_objective_config(opt_cfg, require_equation=False)
+
+    objective_name = scalarized_cfg.get("name", "scalarizedobjective")
+
+    if client_path is None:
+        client_cache_file = opt_cfg.get("client_cache_file")
+        if client_cache_file:
+            client_path = client_cache_file
+            if not os.path.isabs(client_path):
+                client_path = os.path.join(config.get("_project_root", "."), client_path)
+
     if client_path is not None and load_client and os.path.exists(client_path) and not force_rebuild:
         if verbose:
             print(f"Loading saved Ax client from: {client_path}")
-        saved_payload = file_io("load", "joblib", os.path.dirname(client_path), os.path.basename(client_path))
-        if isinstance(saved_payload, dict) and "client" in saved_payload:
-            loaded_client = saved_payload["client"]
-            loaded_results = saved_payload.get("results", [])
+        loaded_client, loaded_results = _load_ax_state(client_path)
+        if loaded_client is not None:
             if return_trial_df:
                 loaded_trial_df = results_to_dataframe(loaded_results)
                 return loaded_client, loaded_results, loaded_trial_df
             return loaded_client, loaded_results
+        if verbose:
+            print("No loadable Ax client snapshot found; starting a fresh optimization client.")
 
     client = Client()
 
-    optimization_config = _build_optimization_config(optimization_mode, objective_name)
+    optimization_config = _build_optimization_config(
+        optimization_mode,
+        objective_name,
+        opt_cfg=opt_cfg,
+    )
     if _normalize_optimization_mode(optimization_mode) == "multiobjective":
         # Ax client versions in this project accept outcome_constraints but not
         # objective_thresholds in configure_optimization.
         optimization_config["outcome_constraints"] = _build_multiobjective_thresholds(
-            objective_thresholds
+            opt_cfg
         )
 
     client.configure_experiment(
@@ -357,13 +923,6 @@ def run_ax_optimization(
 
                 metrics_raw = oracle_from_params(
                     trial_params,
-                    constant_params=constant_params,
-                    norm_dict=norm_dict,
-                    weight_dict=weight_dict,
-                    cation_path=cation_path,
-                    anion_path=anion_path,
-                    model_path=model_path,
-                    optimization_mode=optimization_mode,
                     config=config,
                 )
 
@@ -391,20 +950,14 @@ def run_ax_optimization(
                     and save_every_trials is not None
                     and len(results) % save_every_trials == 0
                 ):
-                    client_dir = os.path.dirname(client_path)
-                    client_name = os.path.basename(client_path)
-                    payload = {"client": client, "results": results}
-                    file_io("save", "joblib", client_dir, client_name, data=payload)
+                    _save_ax_state(client=client, results=results, client_path=client_path, verbose=False)
                     if verbose:
                         print(
                             f"Checkpoint saved after {len(results)} completed trials to: {client_path}"
                         )
 
     if client_path is not None:
-        client_dir = os.path.dirname(client_path)
-        client_name = os.path.basename(client_path)
-        payload = {"client": client, "results": results}
-        file_io("save", "joblib", client_dir, client_name, data=payload)
+        _save_ax_state(client=client, results=results, client_path=client_path, verbose=False)
         if verbose:
             print(f"Saved Ax client to: {client_path}")
 
@@ -708,7 +1261,7 @@ def summarize_inverse_design_metrics_evolution(
     figure_size=(12, 8),
     elev: float = 15,
     azim: float = -60,
-    cmap=custom_cmap,
+    cmap=None,
     text_color: str = "#000000",
     line_color: str = "#7F7F7F",
     grid_color: str = "#B0B0B0",
@@ -716,6 +1269,7 @@ def summarize_inverse_design_metrics_evolution(
     title: str = "Inverse Design Metrics Evolution",
     save_name: str = "inverse_design_metrics_evolution.png",
     objective_weights=None,
+    config=None,
 ):
     import matplotlib.pyplot as plt
     import numpy as np
@@ -791,8 +1345,15 @@ def summarize_inverse_design_metrics_evolution(
     if np.isnan(trial_indices).any():
         trial_indices = np.arange(len(history_df), dtype=float)
 
+    if config is None:
+        config = load_config()
+    plotting_cfg = config.get("plotting", {})
     if cmap is None:
-        cmap = custom_cmap
+        cmap_cfg = plotting_cfg.get("custom_colormap", {})
+        cmap = LinearSegmentedColormap.from_list(
+            cmap_cfg.get("name", "my_palette"),
+            cmap_cfg.get("colors", ["#7FAFD9", "#FFF8EE", "#E38AAA"]),
+        )
     if isinstance(cmap, str):
         cmap = plt.get_cmap(cmap)
     color_positions = np.linspace(0.0, 1.0, len(plot_columns), endpoint=False)
@@ -979,7 +1540,7 @@ def summarize_inverse_design_metrics_evolution(
         fontfamily="Arial",
         ha="center",
         va="bottom",
-        rotation=0,
+        rotation=45,
         zdir="z",
         zorder=1200,
     )
@@ -993,7 +1554,7 @@ def summarize_inverse_design_metrics_evolution(
         fontfamily="Arial",
         ha="right",
         va="center",
-        rotation=90,
+        rotation=-45,
         zdir="z",
         zorder=1200,
     )
@@ -1608,27 +2169,80 @@ def plot_inverse_design_contour(
     ax.legend(loc="upper left", fontsize=12)
     return fig, ax
 
+
+def _get_inverse_design_plot_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    optimization_cfg = get_optimization_config(config or load_config())
+    inverse_cfg = optimization_cfg.get("inverse_design", {}) or {}
+    if not inverse_cfg:
+        plotting_cfg = config.get("plotting", {}) if config is not None else {}
+        inverse_cfg = plotting_cfg.get("inverse_design", {}) or {}
+    if not isinstance(inverse_cfg, dict):
+        raise TypeError("optimization.inverse_design must be a mapping if configured")
+    return inverse_cfg
+
+
+def _resolve_inverse_design_output_dir(config: dict[str, Any] | None, inverse_cfg: dict[str, Any]) -> str | None:
+    output_dir = inverse_cfg.get("output_dir")
+    if output_dir is None:
+        output_dir = (
+            (config or {}).get("project", {})
+            .get("paths", {})
+            .get("outputs_figures")
+        )
+
+    if output_dir is None:
+        return None
+
+    output_dir = str(output_dir)
+    if os.path.isabs(output_dir):
+        return output_dir
+
+    project_root = (config or {}).get("_project_root", ".")
+    return os.path.join(project_root, output_dir)
+
+
+def _get_inverse_design_objective_metadata(
+    config: dict[str, Any] | None,
+    objective_names: list[str] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str], list[str], list[str]]:
+    opt_cfg = get_optimization_config(config or load_config())
+    objective_cfgs = _get_objective_configs(opt_cfg)
+
+    if objective_names is None:
+        objective_names = [cfg["name"] for cfg in objective_cfgs]
+    else:
+        objective_names = list(objective_names)
+
+    objective_cfg_by_name = {cfg["name"]: cfg for cfg in objective_cfgs}
+    missing = [name for name in objective_names if name not in objective_cfg_by_name]
+    if missing:
+        raise KeyError(
+            "objective_names include values not defined in optimization.objectives: "
+            f"{missing}"
+        )
+
+    display_names = []
+    minimize_metrics = []
+    for objective_name in objective_names:
+        objective_cfg = objective_cfg_by_name[objective_name]
+        display_names.append(
+            objective_cfg.get("display_name")
+            or objective_cfg.get("original_name")
+            or objective_name
+        )
+        if objective_cfg["direction"] == "minimize":
+            minimize_metrics.append(objective_name)
+
+    return opt_cfg, objective_cfgs, objective_names, display_names, minimize_metrics
+
 def plot_ax_results(
     trial_df: pd.DataFrame,
-    objective_names,
-    optimization_mode: str = "scalarized",
-    minimize_metrics=None,
-    trial_index_column: str = "trial_index",
-    aggregate_name: str = "objective_sum",
-    aggregate_display_name: str = "Sum of Objectives",
-    display_names=None,
+    config=None,
     client=None,
+    objective_names=None,
+    optimization_mode: str | None = None,
     use_model_predictions: bool = False,
-    output_dir: str | None = None,
-    xtick_step: int = 10,
-    fig_size=None,
-    figure_size=(12, 8),
-    title: str = "Inverse Design Metrics Evolution",
-    save_name: str = "inverse_design_metrics_evolution.png",
-    make_parallel_coordinates: bool = False,
-    parallel_coords_color_by: str | None = None,
     response_map_specs: list[dict] | None = None,
-    objective_weights=None,
 ):
     """
     Dispatch visualization of Ax optimization results based on objective count.
@@ -1640,21 +2254,32 @@ def plot_ax_results(
         {"x_col": ..., "y_col": ..., "z_col": ...}
         and may also include optional kwargs for plot_objective_response_maps().
     """
-    requested_objective_names = list(objective_names)
-    if fig_size is not None:
-        figure_size = fig_size
-    if aggregate_name in requested_objective_names:
-        objective_names = [name for name in requested_objective_names if name != aggregate_name]
-        if display_names is not None and len(display_names) == len(requested_objective_names):
-            display_names = [
-                name
-                for index, name in enumerate(display_names)
-                if requested_objective_names[index] != aggregate_name
-            ]
-    else:
-        objective_names = requested_objective_names
+    if config is None:
+        config = load_config()
 
-    mode = _normalize_optimization_mode(optimization_mode)
+    opt_cfg, _, objective_names, display_names, minimize_metrics = _get_inverse_design_objective_metadata(
+        config=config,
+        objective_names=objective_names,
+    )
+    inverse_cfg = _get_inverse_design_plot_config(config)
+
+    mode = _normalize_optimization_mode(optimization_mode or opt_cfg.get("mode", "scalarized"))
+
+    aggregate_name = inverse_cfg.get("aggregate_name", "objective_sum")
+    aggregate_display_name = inverse_cfg.get("aggregate_display_name", "Sum of Objectives")
+    title = inverse_cfg.get("title", "Inverse Design Metrics Evolution")
+    save_name = inverse_cfg.get("save_name", "inverse_design_metrics_evolution.png")
+    xtick_step = int(inverse_cfg.get("xtick_step", 10))
+    figure_size = tuple(inverse_cfg.get("figure_size", (12, 8)))
+    make_parallel_coordinates = bool(inverse_cfg.get("make_parallel_coordinates", False))
+    parallel_coords_color_by = inverse_cfg.get("parallel_coords_color_by")
+    objective_weights = inverse_cfg.get("objective_weights")
+    trial_index_column = inverse_cfg.get("trial_index_column", "trial_index")
+    output_dir = _resolve_inverse_design_output_dir(config, inverse_cfg)
+
+    if response_map_specs is None:
+        response_map_specs = inverse_cfg.get("response_map_specs", [])
+
     n_objectives = len(objective_names)
 
     if n_objectives == 0:
@@ -1726,6 +2351,7 @@ def plot_ax_results(
             title=title,
             save_name=save_name,
             objective_weights=objective_weights,
+            config=config,
         )
         output["summary"] = summary
         output["figures"]["summary_figure"] = summary["figure"]

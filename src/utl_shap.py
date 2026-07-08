@@ -1,30 +1,58 @@
+import glob
 import joblib
-import numpy as np
+import os
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.model_selection import train_test_split
+from sklearn.utils.multiclass import type_of_target
+
 import sys
-import os
-PROJECT_ROOT         = os.path.abspath(os.path.join(os.getcwd(), "..", ".."))
-CODE_PATH            = os.path.join(PROJECT_ROOT, "src")
-sys.path.insert(0, CODE_PATH)
-from utl_modelling import _build_feature_table
+
+SRC_PATH = Path(__file__).resolve().parent
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
+from utl_config_loader import get_model_dir, load_config
+from utl_modelling import _build_feature_table, _resolve_model_path
 
 FONT_SIZE = 20
 FIG_SIZE = (20, 16)
-custom_cmap = LinearSegmentedColormap.from_list(
-    "my_palette",
-    ["#7FAFD9", "#FFF8EE", "#E38AAA"],
-)
+
+
+def _resolve_config(config=None):
+    return load_config() if config is None else config
+
+
+def _get_plotting_cfg(config=None):
+    return _resolve_config(config).get("plotting", {})
+
+
+def _build_custom_cmap(plotting_cfg):
+    cmap_cfg = plotting_cfg.get("custom_colormap", {})
+    return LinearSegmentedColormap.from_list(
+        cmap_cfg.get("name", "my_palette"),
+        cmap_cfg.get("colors", ["#7FAFD9", "#FFF8EE", "#E38AAA"]),
+    )
+
+
+def _infer_model_task_from_target(y):
+    y_non_null = y.dropna()
+    target_kind = type_of_target(y_non_null)
+    if target_kind in {"binary", "multiclass", "multiclass-multioutput"}:
+        return "classifier"
+    return "regressor"
 
 def shap_explain_target(
     target,
     df_enriched,
-    base_features,
-    MODEL_PATH,
-    random_state=42,
+    features_to_model,
+    config=None,
+    random_state=None,
     max_samples=1000,
-    fig_size=(20, 16),
+    fig_size=None,
  ):
     """
     Load a saved ExtraTrees pipeline for a given target, rebuild training-like
@@ -36,17 +64,21 @@ def shap_explain_target(
         Name of the target variable (used in both build_feature_table and model filename).
     df_enriched : pandas.DataFrame
         Enriched membrane dataset (after feature_engineering).
-    base_features : list of str
+    features_to_model : list of str
         Base feature columns to pass into build_feature_table.
-    model_path : str, optional
-        Directory where the fitted pipelines are stored.
-        Models are assumed to be named f"{target}_extratrees.pkl".
+    config : dict
+        Loaded project configuration dictionary.
+        Filename is resolved from modeling.model_filename_pattern and
+        modeling.model_selection in config.yaml, with task inferred as
+        "regressor" or "classifier".
     random_state : int, optional
         Random seed for train/test split used to construct SHAP background data.
+        If None, uses config["modeling"]["random_state"].
     max_samples : int, optional
         Maximum number of samples to use for SHAP (subsampled if larger).
     fig_size : tuple, optional
         Figure size for SHAP summary and bar plots.
+        If None, uses config["plotting"]["global_figure_size"].
 
     Returns
     -------
@@ -70,13 +102,46 @@ def shap_explain_target(
 
     print(f"\n=== SHAP interpretation for target: {target} ===")
 
-    # Load the saved pipeline for this target
-    model_path = os.path.join(MODEL_PATH, f"{target}_extratrees.pkl")
+    # Rebuild feature table first so we can infer task from target data type.
+    X, y = _build_feature_table(df_enriched, features_to_model=features_to_model, target=target)
+    inferred_task = _infer_model_task_from_target(y)
+
+    config = _resolve_config(config)
+    modeling_cfg = config.get("modeling", {})
+    plotting_cfg = _get_plotting_cfg(config)
+    if random_state is None:
+        random_state = modeling_cfg.get("random_state", 42)
+    if fig_size is None:
+        fig_size = tuple(plotting_cfg.get("global_figure_size", FIG_SIZE))
+    font_size = plotting_cfg.get("font_size", FONT_SIZE)
+    colors = plotting_cfg.get("colors", {})
+    summary_cmap = _build_custom_cmap(plotting_cfg)
+    bar_color = colors.get("scatter", "#7FAFD9")
+
+    selected_model_name = modeling_cfg.get("model_selection", "extratrees")
+    model_filename_pattern = modeling_cfg.get("model_filename_pattern", "{target}_{model}_{task}.pkl")
+    model_dir = get_model_dir(config)
+
+    # Resolve model path from config naming pattern and inferred task label.
+    model_path = _resolve_model_path(
+        model_dir=model_dir,
+        model_filename_pattern=model_filename_pattern,
+        target=target,
+        task=inferred_task,
+        model=selected_model_name,
+    )
+    if not os.path.exists(model_path):
+        available_pickles = sorted(glob.glob(os.path.join(model_dir, "*.pkl")))
+        raise FileNotFoundError(
+            "No saved model file found for SHAP target "
+            f"'{target}' with inferred task '{inferred_task}' and model '{selected_model_name}'. "
+            f"Expected: {model_path}. "
+            f"Available .pkl files in model_dir: {available_pickles}"
+        )
+
     pipe = joblib.load(model_path)
     print(f"Loaded model from: {model_path}")
 
-    # Rebuild feature table to obtain training-like inputs for SHAP background data
-    X, y = _build_feature_table(df_enriched, base_features=base_features, target=target)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=random_state
     )
@@ -113,19 +178,19 @@ def shap_explain_target(
     shap_values = explainer.shap_values(X_shap)
 
     # SHAP beeswarm: global importance + direction of effect
-    plt.rcParams.update({'font.size': FONT_SIZE})
+    plt.rcParams.update({'font.size': font_size})
     shap.summary_plot(
         shap_values,
         X_shap,
         feature_names=feature_names,
         show=False,
-        cmap=custom_cmap,  # use the same custom colormap for consistency
+        cmap=summary_cmap,
         plot_size=fig_size,
     )
     summary_fig = plt.gcf()
     summary_fig.set_size_inches(*fig_size)
     summary_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
-    plt.title(f"SHAP summary:{target}", fontsize=FONT_SIZE, fontweight='bold')
+    plt.title(f"SHAP summary:{target}", fontsize=font_size, fontweight='bold')
     ax = plt.gca()
     ax.grid(False)
     for spine in ax.spines.values():
@@ -143,7 +208,7 @@ def shap_explain_target(
         plot_type="bar",
         show=False,
         plot_size=fig_size,
-        color="#7FAFD9",
+        color=bar_color,
     )
     bar_fig = plt.gcf()
     bar_fig.set_size_inches(*fig_size)
@@ -151,13 +216,13 @@ def shap_explain_target(
     ax = plt.gca()
     ax.grid(False)
     for patch in ax.patches:
-        patch.set_facecolor("#7FAFD9")
-        patch.set_edgecolor("#7FAFD9")
+        patch.set_facecolor(bar_color)
+        patch.set_edgecolor(bar_color)
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_linewidth(1.5)
         spine.set_edgecolor('black')
-    plt.title(f"SHAP feature importance : {target}", fontsize=FONT_SIZE, fontweight='bold')
+    plt.title(f"SHAP feature importance : {target}", fontsize=font_size, fontweight='bold')
     plt.show()
 
     return shap_values, feature_names, summary_fig, bar_fig

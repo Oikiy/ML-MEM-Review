@@ -127,6 +127,44 @@ def _resolve_paths(config: Dict[str, Any], project_root: str) -> None:
                 config[key] = os.path.expandvars(os.path.expanduser(value))
 
 
+def get_feature_engineering_lookup_paths(config: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Resolve feature engineering lookup file paths from grouped lookup config.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_config().
+
+    Returns
+    -------
+    dict
+        Mapping from align_column to resolved lookup file path.
+    """
+    project_root = config["_project_root"]
+    lookups = config.get("feature_engineering", {}).get("lookups", [])
+    lookup_by_align_column = {}
+
+    for lookup in lookups:
+        if not isinstance(lookup, dict):
+            continue
+
+        align_column = lookup.get("align_column")
+        lookup_path = lookup.get("lookup_path")
+
+        if not align_column or not lookup_path:
+            continue
+
+        if not os.path.isabs(lookup_path) and not lookup_path.startswith(("$", "~")):
+            resolved_lookup_path = os.path.join(project_root, lookup_path)
+        else:
+            resolved_lookup_path = os.path.expandvars(os.path.expanduser(lookup_path))
+
+        lookup_by_align_column[align_column] = resolved_lookup_path
+
+    return lookup_by_align_column
+
+
 def get_data_paths(config: Dict[str, Any]) -> Dict[str, str]:
     """
     Build complete data file paths from config.
@@ -139,17 +177,22 @@ def get_data_paths(config: Dict[str, Any]) -> Dict[str, str]:
     Returns
     -------
     dict
-        Dictionary with keys: 'tutorial_dataset', 'cation_prop', 'anion_prop'
+        Dictionary with keys:
+        - dataset
+        - lookup_by_align_column (mapping align_column -> resolved lookup file path)
     """
     project_root = config["_project_root"]
     data_raw = config["project"]["paths"]["data_raw"]
     data_raw_abs = os.path.join(project_root, data_raw)
-    
-    return {
-        "tutorial_dataset": os.path.join(data_raw_abs, config["data"]["tutorial_dataset"]),
-        "cation_prop": os.path.join(data_raw_abs, config["data"]["cation_properties"]),
-        "anion_prop": os.path.join(data_raw_abs, config["data"]["anion_properties"]),
+
+    lookup_by_align_column = get_feature_engineering_lookup_paths(config)
+
+    data_paths = {
+        "dataset": os.path.join(data_raw_abs, config["data"]["dataset"]),
+        "lookup_by_align_column": lookup_by_align_column,
     }
+
+    return data_paths
 
 
 def get_model_dir(config: Dict[str, Any]) -> str:
@@ -258,6 +301,70 @@ def get_modeling_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config.get("modeling", {})
 
 
+def get_project_definition_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract project definition configuration.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_config().
+
+    Returns
+    -------
+    dict
+        Project definition configuration subset.
+    """
+    return config.get("project_definition", {})
+
+
+def get_project_definition_target(config: Dict[str, Any]) -> list[str]:
+    """
+    Return configured target columns for modeling.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_config().
+
+    Returns
+    -------
+    list[str]
+        List of target column names.
+
+    Raises
+    ------
+    ValueError
+        If project_definition.target is missing or empty.
+    """
+    project_definition_cfg = get_project_definition_config(config)
+    targets = project_definition_cfg.get("target", [])
+    if not targets:
+        raise ValueError(
+            "Missing config key: project_definition.target. "
+            "Please define target columns in config.yaml under project_definition.target."
+        )
+    return targets
+
+
+def get_project_definition_features(config: Dict[str, Any]) -> list[str]:
+    """
+    Return configured raw feature columns for subset selection.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_config().
+
+    Returns
+    -------
+    list[str]
+        List of configured feature column names.
+    """
+    project_definition_cfg = get_project_definition_config(config)
+    return project_definition_cfg.get("features", [])
+
+
 def validate_config(config: Dict[str, Any]) -> None:
     """
     Validate that all required config sections are present.
@@ -274,7 +381,7 @@ def validate_config(config: Dict[str, Any]) -> None:
     """
     required_sections = [
         "project", "data", "plotting", "feature_engineering",
-        "modeling", "targets", "base_features", "optimization"
+        "modeling", "targets", "features_to_model", "optimization"
     ]
     
     for section in required_sections:
