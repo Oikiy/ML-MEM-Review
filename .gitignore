@@ -216,3 +216,22 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated model artifacts (repo root and examples/*/)
+models/*.pkl
+models/*.pickle
+models/*.joblib
+**/models/*.pkl
+**/models/*.pickle
+**/models/*.joblib
+
+# Ax optimization checkpoints
+ax_client.pkl
+ax_client.json
+*.ax_client.json
+**/ax_client.pkl
+**/*.ax_client.json
+
+# Generated figures / reports
+outputs/
+**/outputs/

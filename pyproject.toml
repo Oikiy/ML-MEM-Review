@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-mem-review"
+version = "0.6.0"
+description = "ML-inverse design workflow for membrane development (ML-MEM)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "joblib>=1.3",
+    "pyyaml>=6.0",
+    "openpyxl>=3.1",
+    "shap>=0.45",
+    "ax-platform>=0.4",
+    "botorch>=0.11",
+    "imbalanced-learn>=0.12",
+    "scikit-optimize>=0.10",
+    "plotly>=5.20",
+    "notebook>=7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "jupyter>=1.1",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = [
+    "run_pipeline",
+    "utl_Ax",
+    "utl_config_loader",
+    "utl_eda",
+    "utl_feateng",
+    "utl_fileIO",
+    "utl_model_arch",
+    "utl_modelling",
+    "utl_shap",
+]
+
+[project.scripts]
+ml-mem-review = "run_pipeline:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -7,11 +7,11 @@ import numpy as np
 import pandas as pd
 
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    confusion_matrix,
     f1_score,
     mean_absolute_error,
     mean_squared_error,
@@ -24,7 +24,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.utils.multiclass import type_of_target
 
-from utl_config_loader import get_model_dir, load_config
+from utl_config_loader import (
+    get_model_dir,
+    load_config,
+    resolve_features_to_model,
+)
+from utl_model_arch import make_estimator, normalize_model_key, resolve_param_dist
 
 try:
     from imblearn.over_sampling import BorderlineSMOTE
@@ -56,7 +61,12 @@ def _build_feature_table(
     target: str,
     missing_value_threshold: float = 0.3,
 ):
-    """Build an ML-ready feature table from the raw dataset."""
+    """Build an ML feature table: subset to configured features and drop target-missing rows.
+
+    Column-quality filtering (high-missingness, constant columns) is intentionally NOT
+    performed here: it is done after the train/test split in :func:`train_model` using
+    train-only statistics to prevent data leakage.
+    """
     df = df_raw.copy()
     df = df.dropna(subset=[target]).reset_index(drop=True)
     features_to_model = [c for c in features_to_model if c in df.columns]
@@ -66,33 +76,58 @@ def _build_feature_table(
 
     print(f"Initial feature count: {X.shape[1]}")
     print(f"Initial sample count: {X.shape[0]}")
-
-    missing_frac = X.isna().mean()
-    high_missing_cols = missing_frac[missing_frac > missing_value_threshold].index.tolist()
-    if high_missing_cols:
-        print("Dropping high-missing columns:", high_missing_cols)
-        X = X.drop(columns=high_missing_cols)
-
-    nunique = X.nunique(dropna=False)
-    constant_cols = nunique[nunique <= 1].index.tolist()
-    if constant_cols:
-        print("Dropping constant columns:", constant_cols)
-        X = X.drop(columns=constant_cols)
-
-    print(f"Final feature count: {X.shape[1]}")
     return X, y
+
+
+def _drop_low_information_columns(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    missing_value_threshold: float = 0.3,
+):
+    """Drop high-missingness/constant columns using TRAIN-ONLY statistics.
+
+    Computing these statistics on the training split only avoids leaking information
+    from the test set into preprocessing decisions.
+
+    Returns
+    -------
+    tuple
+        (X_train, X_test, list_of_dropped_columns)
+    """
+    if X_train.shape[1] == 0:
+        return X_train, X_test, []
+
+    missing_frac = X_train.isna().mean()
+    high_missing_cols = missing_frac[missing_frac > missing_value_threshold].index.tolist()
+
+    nunique = X_train.nunique(dropna=False)
+    constant_cols = nunique[nunique <= 1].index.tolist()
+
+    dropped_cols = list(dict.fromkeys(high_missing_cols + constant_cols))
+    if high_missing_cols:
+        print("Dropping high-missing columns (train statistics):", high_missing_cols)
+    if constant_cols:
+        print("Dropping constant columns (train statistics):", constant_cols)
+
+    if dropped_cols:
+        X_train = X_train.drop(columns=dropped_cols)
+        X_test = X_test.drop(columns=dropped_cols)
+
+    print(f"Final feature count: {X_train.shape[1]}")
+    return X_train, X_test, dropped_cols
 
 
 def _split_feature_types(df_frame: pd.DataFrame, feature_list: list):
     model_features = [feature for feature in feature_list if feature in df_frame.columns]
-    categorical_cols = [
-        feature
-        for feature in model_features
-        if df_frame[feature].dtype == "object"
-        or df_frame[feature].dtype.name == "category"
-        or df_frame[feature].dtype == "bool"
-    ]
-    numerical_cols = [feature for feature in model_features if feature not in categorical_cols]
+    categorical_cols = []
+    numerical_cols = []
+    for feature in model_features:
+        series = df_frame[feature]
+        # Non-numeric (object, string[python], category, bool, etc.) -> categorical.
+        if pd.api.types.is_bool_dtype(series) or not pd.api.types.is_numeric_dtype(series):
+            categorical_cols.append(feature)
+        else:
+            numerical_cols.append(feature)
     return model_features, categorical_cols, numerical_cols
 
 
@@ -118,33 +153,40 @@ def _infer_task(task: Optional[str], pipeline, y):
             return estimator_type
 
     y_series = y if isinstance(y, pd.Series) else pd.Series(y)
-    if type_of_target(y_series) in {"binary", "multiclass"}:
+    y_clean = y_series.dropna()
+    if type_of_target(y_clean) in {"binary", "multiclass"}:
+        # scikit-learn treats any integer-encoded target as class labels, so a
+        # continuous integer target (e.g. counts, scores) would be misdetected
+        # as classification. Treat high-cardinality numeric targets as
+        # regression and low-cardinality ones (0/1, small class sets) as
+        # classification.
+        if pd.api.types.is_numeric_dtype(y_clean):
+            n_unique = int(y_clean.nunique())
+            n_rows = max(int(len(y_clean)), 1)
+            if n_unique >= 10 or n_unique / n_rows > 0.25:
+                return "regression"
         return "classification"
     return "regression"
 
 
-def _default_param_dist(task: str):
-    if task == "classification":
-        return {
-            "model__n_estimators": [200, 300, 500, 800],
-            "model__max_depth": [None, 10, 20, 40],
-            "model__min_samples_leaf": [1, 2, 5],
-            "model__max_features": ["sqrt", "log2", 0.5, 0.8],
-            "model__criterion": ["gini", "entropy"],
-        }
-
-    return {
-        "model__n_estimators": [200, 300, 500, 800],
-        "model__max_depth": [None, 10, 20, 40],
-        "model__min_samples_leaf": [1, 2, 5],
-        "model__max_features": ["sqrt", "log2", 0.5, 0.8],
-    }
+def _default_param_dist(task: str, model_selection: str = "extratrees"):
+    """Backward-compatible wrapper; prefer :func:`resolve_param_dist`."""
+    return resolve_param_dist(model_selection, task)
 
 
-def _default_model(task: str, random_state: int, n_estimators: int):
-    if task == "classification":
-        return ExtraTreesClassifier(n_estimators=n_estimators, random_state=random_state, n_jobs=-1)
-    return ExtraTreesRegressor(n_estimators=n_estimators, random_state=random_state, n_jobs=-1)
+def _default_model(
+    task: str,
+    random_state: int,
+    n_estimators: int,
+    model_selection: str = "extratrees",
+):
+    """Instantiate the configured model architecture for the given task."""
+    return make_estimator(
+        model_selection,
+        task=task,
+        random_state=random_state,
+        n_estimators=n_estimators,
+    )
 
 
 def _task_to_filename_label(task: str) -> str:
@@ -178,6 +220,7 @@ def _build_default_pipeline(
     n_estimators: int,
     use_smote: bool = False,
     estimator=None,
+    model_selection: str = "extratrees",
 ):
     _, categorical_cols, numerical_cols = _split_feature_types(X_train, list(X_train.columns))
 
@@ -208,7 +251,11 @@ def _build_default_pipeline(
         raise ValueError("No usable features remain after preprocessing.")
 
     preprocess = ColumnTransformer(transformers=transformers, remainder="drop")
-    model = estimator if estimator is not None else _default_model(task, random_state, n_estimators)
+    model = (
+        estimator
+        if estimator is not None
+        else _default_model(task, random_state, n_estimators, model_selection=model_selection)
+    )
 
     if task == "classification" and use_smote:
         if ImbPipeline is None or BorderlineSMOTE is None:
@@ -230,9 +277,9 @@ def regression_metrics(y_true, y_pred, label="", verbose: bool = True):
     rmse = np.sqrt(mse)
     mae = mean_absolute_error(y_true, y_pred)
     if verbose:
-        print(f"{label} R²   = {r2:.4f}")
-        print(f"{label} RMSE = {rmse:.4f}")
-        print(f"{label} MAE  = {mae:.4f}")
+        print(f"{label} R2    = {r2:.4f}")
+        print(f"{label} RMSE  = {rmse:.4f}")
+        print(f"{label} MAE   = {mae:.4f}")
     return r2, rmse, mae
 
 
@@ -369,12 +416,19 @@ def train_model(
     config = load_config(config_path=config_path)
     modeling_cfg = config.get("modeling", {})
     feature_engineering_cfg = config.get("feature_engineering", {})
-    features_to_model = config.get("features_to_model", [])
 
-    resolved_task = _infer_task(task, pipeline, df[target].dropna())
+    # Feature columns come from the config resolver (auto mode or explicit list).
+    features_to_model = resolve_features_to_model(config, df)
+
+    requested_task = task
+    if (requested_task or "auto").lower() == "auto":
+        requested_task = modeling_cfg.get("task", "auto")
+    resolved_task = _infer_task(requested_task, pipeline, df[target].dropna())
 
     model_dir = get_model_dir(config)
-    selected_model_name = modeling_cfg.get("model_selection", "extratrees")
+    selected_model_name = normalize_model_key(
+        modeling_cfg.get("model_selection", "extratrees")
+    )
     model_filename_pattern = modeling_cfg.get("model_filename_pattern", "{target}_{model}_{task}.pkl")
     model_path = _resolve_model_path(
         model_dir=model_dir,
@@ -388,12 +442,21 @@ def train_model(
     random_state = modeling_cfg.get("random_state", RANDOM_STATE)
     n_estimators = modeling_cfg.get("n_estimators", 300)
     use_kfold = modeling_cfg.get("use_kfold", False)
-    n_splits = modeling_cfg.get("cv_folds", modeling_cfg.get("n_splits", 5))
+    n_splits = int(modeling_cfg.get("cv_folds", modeling_cfg.get("n_splits", 5)))
     use_hyperparam_tuning = modeling_cfg.get("use_hyperparam_tuning", False)
     n_iter_search = modeling_cfg.get("n_iter_search", 20)
     search_cv = modeling_cfg.get("search_cv", "randomizedsearchcv")
     use_smote = modeling_cfg.get("use_smote", False) if use_smote is None else use_smote
-    param_dist = param_dist_override or modeling_cfg.get("param_dist", _default_param_dist(resolved_task))
+    user_param_dist = param_dist_override if param_dist_override is not None else modeling_cfg.get("param_dist")
+    param_dist = resolve_param_dist(
+        selected_model_name, resolved_task, user_param_dist=user_param_dist
+    )
+    if use_hyperparam_tuning and not param_dist:
+        print(
+            f"No hyperparameter search space for model '{selected_model_name}' "
+            f"({resolved_task}); training with defaults."
+        )
+        use_hyperparam_tuning = False
     missing_value_threshold = feature_engineering_cfg.get("missing_value_threshold", 0.3)
 
     X, y = _build_feature_table(
@@ -429,12 +492,36 @@ def train_model(
             random_state=random_state,
         )
 
+    X_train, X_test, _ = _drop_low_information_columns(
+        X_train,
+        X_test,
+        missing_value_threshold=missing_value_threshold,
+    )
+
+    # Cap CV folds so StratifiedKFold / KFold never exceeds available samples.
+    if use_kfold:
+        max_splits = int(len(y_train))
+        if resolved_task == "classification":
+            max_splits = int(y_train.value_counts(dropna=True).min())
+        if max_splits < 2:
+            print("Warning: too few samples per class/fold for CV; disabling k-fold.")
+            use_kfold = False
+        elif n_splits > max_splits:
+            print(
+                f"Warning: reducing cv_folds from {n_splits} to {max_splits} "
+                "(limited by training samples / smallest class)."
+            )
+            n_splits = max_splits
+
     if os.path.exists(model_path) and not force_retrain:
         print(f"\n=== Reusing existing model for target: {target} ===")
         print(f"Loading model from: {model_path}")
         pipe = joblib.load(model_path)
     else:
-        print(f"\n=== Training {resolved_task} model for target: {target} ===")
+        print(
+            f"\n=== Training {resolved_task} model ({selected_model_name}) "
+            f"for target: {target} ==="
+        )
         print("Training samples:", X_train.shape[0], "using features:", X_train.columns.tolist())
         print("Test samples:", X_test.shape[0])
 
@@ -446,6 +533,7 @@ def train_model(
                 random_state=random_state,
                 n_estimators=n_estimators,
                 use_smote=use_smote,
+                model_selection=selected_model_name,
             )
         elif not hasattr(pipe, "named_steps") and not hasattr(pipe, "steps"):
             pipe = _build_default_pipeline(
@@ -455,9 +543,15 @@ def train_model(
                 n_estimators=n_estimators,
                 use_smote=use_smote,
                 estimator=pipe,
+                model_selection=selected_model_name,
             )
 
-        print("Pipeline received:", type(pipe).__name__)
+        print(
+            "Pipeline received:",
+            type(pipe).__name__,
+            "| estimator:",
+            type(pipe.named_steps.get("model", pipe)).__name__,
+        )
 
         pipe = fit_pipeline(
             pipe=pipe,
@@ -478,11 +572,52 @@ def train_model(
         joblib.dump(pipe, model_path)
         print(f"Model saved to: {model_path}")
 
-    y_pred_train = pipe.predict(X_train)
-    y_pred_test = pipe.predict(X_test)
-    _print_train_test_metrics(resolved_task, y_train, y_pred_train, y_test, y_pred_test)
-
+    # Metrics are printed once by evaluate_and_plot_results / evaluate_and_plot_parity.
+    # Keep the historical 5-tuple return for the teaching notebook.
     return pipe, X_train, X_test, y_train, y_test
+
+
+def evaluate_and_plot_results(
+    target,
+    y_train,
+    y_pred_train,
+    y_test,
+    y_pred_test,
+    task="auto",
+    fig_size=(10, 8),
+    config=None,
+):
+    """Task-aware evaluation plot (parity for regression, confusion for classification).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The created figure (caller should save it; do not rely on plt.gcf()).
+    str
+        Resolved task name (``regression`` or ``classification``).
+    """
+    if config is None:
+        config = load_config()
+
+    requested = task
+    if (requested or "auto").lower() == "auto":
+        requested = config.get("modeling", {}).get("task", "auto")
+    resolved_task = _infer_task(requested, None, y_train)
+
+    print(f"\nPerformance for target: {target} ({resolved_task})")
+    if resolved_task == "classification":
+        classification_metrics(y_train, y_pred_train, label="Train")
+        classification_metrics(y_test, y_pred_test, label="Test")
+        fig = _plot_confusion_matrices(
+            target, y_train, y_pred_train, y_test, y_pred_test, fig_size=fig_size, config=config
+        )
+    else:
+        regression_metrics(y_train, y_pred_train, label="Train")
+        regression_metrics(y_test, y_pred_test, label="Test")
+        fig = _plot_parity(
+            target, y_train, y_pred_train, y_test, y_pred_test, fig_size=fig_size, config=config
+        )
+    return fig, resolved_task
 
 
 def evaluate_and_plot_parity(
@@ -492,16 +627,37 @@ def evaluate_and_plot_parity(
     y_test,
     y_pred_test,
     fig_size=(10, 8),
-    metrics_fn=regression_metrics,
+    metrics_fn=None,
+    config=None,
+    task="auto",
+):
+    """Backward-compatible entry point; dispatches on task and returns the figure."""
+    if metrics_fn is classification_metrics:
+        task = "classification"
+    elif metrics_fn is regression_metrics:
+        task = "regression"
+    fig, _ = evaluate_and_plot_results(
+        target=target,
+        y_train=y_train,
+        y_pred_train=y_pred_train,
+        y_test=y_test,
+        y_pred_test=y_pred_test,
+        task=task,
+        fig_size=fig_size,
+        config=config,
+    )
+    return fig
+
+
+def _plot_parity(
+    target,
+    y_train,
+    y_pred_train,
+    y_test,
+    y_pred_test,
+    fig_size=(10, 8),
     config=None,
 ):
-    if config is None:
-        config = load_config()
-
-    print(f"\nPerformance for target: {target}")
-    metrics_fn(y_train, y_pred_train, label="Train")
-    metrics_fn(y_test, y_pred_test, label="Test")
-
     plotting_cfg = config.get("plotting", {}) if config is not None else {}
     font_size = plotting_cfg.get("font_size", FONT_SIZE)
     colors = plotting_cfg.get("custom_colormap", {})
@@ -509,22 +665,19 @@ def evaluate_and_plot_parity(
     test_color = colors.get("colors", ["#e38f8f"])[-1]
     annotation_color = colors.get("scatter", "#7FAFD9")
 
-    plt.figure(figsize=fig_size)
-    plt.scatter(y_train, y_pred_train, label="Train Data", color=train_color, alpha=0.6)
-    plt.scatter(y_test, y_pred_test, label="Test Data", color=test_color, marker="D")
-    plt.plot(
-        [min(min(y_test), min(y_train)), max(max(y_test), max(y_train))],
-        [min(min(y_test), min(y_train)), max(max(y_test), max(y_train))],
-        "--",
-        color="gray",
-    )
-    plt.xlabel("True Values", fontsize=font_size)
-    plt.ylabel("Predictions", fontsize=font_size)
-    plt.title(f"Parity Plot for {target}", fontsize=font_size, fontweight="bold")
+    fig, ax = plt.subplots(figsize=fig_size)
+    ax.scatter(y_train, y_pred_train, label="Train Data", color=train_color, alpha=0.6)
+    ax.scatter(y_test, y_pred_test, label="Test Data", color=test_color, marker="D")
+    lo = min(min(y_test), min(y_train))
+    hi = max(max(y_test), max(y_train))
+    ax.plot([lo, hi], [lo, hi], "--", color="gray")
+    ax.set_xlabel("True Values", fontsize=font_size)
+    ax.set_ylabel("Predictions", fontsize=font_size)
+    ax.set_title(f"Parity Plot for {target}", fontsize=font_size, fontweight="bold")
 
     r2_train, rmse_train, _ = regression_metrics(y_train, y_pred_train, label="Train", verbose=False)
     r2_test, rmse_test, _ = regression_metrics(y_test, y_pred_test, label="Test", verbose=False)
-    plt.annotate(
+    ax.annotate(
         f"R$^2$ (Train)={r2_train:.2f}\nRMSE (Train)={rmse_train:.2f}",
         xy=(0.95, 0.12),
         xycoords="axes fraction",
@@ -533,7 +686,7 @@ def evaluate_and_plot_parity(
         fontsize=font_size,
         color=annotation_color,
     )
-    plt.annotate(
+    ax.annotate(
         f"R$^2$ (Test)={r2_test:.2f}\nRMSE (Test)={rmse_test:.2f}",
         xy=(0.95, 0.12),
         xycoords="axes fraction",
@@ -542,8 +695,6 @@ def evaluate_and_plot_parity(
         fontsize=font_size,
         color=test_color,
     )
-
-    ax = plt.gca()
     ax.grid(False)
     ax.tick_params(
         axis="both",
@@ -562,6 +713,57 @@ def evaluate_and_plot_parity(
         spine.set_visible(True)
         spine.set_linewidth(1.5)
         spine.set_edgecolor("black")
+    ax.legend()
+    fig.tight_layout()
+    return fig
 
-    plt.legend()
-    plt.show()
+
+def _plot_confusion_matrices(
+    target,
+    y_train,
+    y_pred_train,
+    y_test,
+    y_pred_test,
+    fig_size=(12, 5),
+    config=None,
+):
+    plotting_cfg = config.get("plotting", {}) if config is not None else {}
+    font_size = plotting_cfg.get("font_size", FONT_SIZE)
+
+    labels = list(pd.unique(pd.concat([pd.Series(y_train), pd.Series(y_test)], ignore_index=True)))
+    # Stable order: sorted when comparable, else first-seen order.
+    try:
+        labels = sorted(labels)
+    except TypeError:
+        pass
+
+    fig, axes = plt.subplots(1, 2, figsize=fig_size)
+    for ax, y_true, y_pred, title in (
+        (axes[0], y_train, y_pred_train, "Train"),
+        (axes[1], y_test, y_pred_test, "Test"),
+    ):
+        matrix = confusion_matrix(y_true, y_pred, labels=labels)
+        im = ax.imshow(matrix, interpolation="nearest", cmap="Blues")
+        ax.set_title(f"{title} confusion — {target}", fontsize=font_size, fontweight="bold")
+        tick_marks = np.arange(len(labels))
+        ax.set_xticks(tick_marks)
+        ax.set_yticks(tick_marks)
+        ax.set_xticklabels([str(label) for label in labels], fontsize=max(8, font_size - 6))
+        ax.set_yticklabels([str(label) for label in labels], fontsize=max(8, font_size - 6))
+        ax.set_xlabel("Predicted", fontsize=font_size)
+        ax.set_ylabel("True", fontsize=font_size)
+        thresh = matrix.max() / 2.0 if matrix.size else 0
+        for i in range(matrix.shape[0]):
+            for j in range(matrix.shape[1]):
+                ax.text(
+                    j,
+                    i,
+                    format(matrix[i, j], "d"),
+                    ha="center",
+                    va="center",
+                    color="white" if matrix[i, j] > thresh else "black",
+                    fontsize=max(8, font_size - 4),
+                )
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    return fig

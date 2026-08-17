@@ -1,0 +1,25 @@
+# Switch models example — same data, different model_selection.
+# Run from repo root:
+#   python -m run_pipeline --config examples/03_switch_models/config.yaml --stage model
+
+project:
+  name: "example_03_switch_models"
+
+data:
+  dataset: "toy_regression.csv"
+  sheet: ""
+  targets: ["permeance"]
+
+features:
+  mode: "auto"
+
+modeling:
+  # Change only this line to try another architecture:
+  model_selection: "randomforest"
+  # regression options:
+  #   extratrees | randomforest | histgradientboosting | ridge | elasticnet | linear
+  task: "regression"
+  use_hyperparam_tuning: false
+  n_estimators: 100
+  random_state: 42
+  cv_folds: 3

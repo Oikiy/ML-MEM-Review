@@ -1,0 +1,22 @@
+# Minimal regression example — continuous target, auto features.
+# Run from repo root:
+#   python -m run_pipeline --config examples/01_minimal_regression/config.yaml
+
+project:
+  name: "example_01_minimal_regression"
+
+data:
+  dataset: "toy_regression.csv"
+  sheet: ""
+  targets: ["permeance"]
+
+features:
+  mode: "auto"
+
+modeling:
+  model_selection: "extratrees"
+  task: "regression"
+  use_hyperparam_tuning: false   # keep the example fast
+  n_estimators: 100
+  random_state: 42
+  cv_folds: 3

@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software in a publication, please cite the associated membrane-ML review article as well as the software itself."
+title: "ML-MEM-Review"
+abstract: "Reproducible ML inverse-design workflow for membrane development, designed to run on any tabular dataset via a single config file."
+authors:
+  - family-names: "Yan"
+    given-names: "Kai Qi"
+    orcid: ""
+keywords:
+  - machine learning
+  - inverse design
+  - membranes
+  - bayesian optimization
+license: MIT
+version: "0.6.0"
+date-released: "2026-08-10"
+preferred-citation:
+  type: article
+  title: "ML in membrane development: an advanced-materials review"
+  authors:
+    - family-names: "Yan"
+      given-names: "Kai Qi"

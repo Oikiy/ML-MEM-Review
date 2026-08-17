@@ -1,7 +1,9 @@
 
 import os
+import random
 import sys
 import joblib
+import numpy as np
 import pandas as pd
 import warnings
 from numbers import Number
@@ -639,28 +641,39 @@ def _load_required_oracle_pipelines(
     config: dict,
     required_metric_keys: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Load all required surrogate pipelines for oracle inference."""
+    """Load all required surrogate pipelines for oracle inference.
+
+    Metric key -> model target column mapping (in precedence order):
+    1. ``optimization.objectives[].model_target`` for that metric key
+    2. ``modeling.oracle_model_targets`` map in config
+    3. the metric key itself (use when objective names match ``data.targets``)
+    """
     modeling_cfg = config.get("modeling", {}) if config is not None else {}
+    opt_cfg = get_optimization_config(config) if config is not None else {}
     selected_model_name = modeling_cfg.get("model_selection", "extratrees")
     model_filename_pattern = modeling_cfg.get(
         "model_filename_pattern", "{target}_{model}_{task}.pkl"
     )
 
-    # Metric keys can be mapped to model target names via config override.
-    default_metric_to_target = {
-        "PureWaterPermeability": "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}",
-        "solute1Rejection": "solute1_Rejection",
-    }
-    metric_to_target_overrides = modeling_cfg.get("oracle_model_targets", {}) or {}
+    metric_to_target_overrides = dict(modeling_cfg.get("oracle_model_targets", {}) or {})
+    for objective_cfg in opt_cfg.get("objectives", []) or []:
+        if not isinstance(objective_cfg, dict):
+            continue
+        metric_key = objective_cfg.get("original_name") or objective_cfg.get("name")
+        model_target = objective_cfg.get("model_target")
+        if metric_key and model_target:
+            metric_to_target_overrides.setdefault(str(metric_key), str(model_target))
 
     if required_metric_keys is None:
-        required_metric_keys = list(default_metric_to_target.keys())
+        required_metric_keys = [
+            objective_cfg.get("original_name") or objective_cfg.get("name")
+            for objective_cfg in (opt_cfg.get("objectives", []) or [])
+            if isinstance(objective_cfg, dict)
+            and (objective_cfg.get("original_name") or objective_cfg.get("name"))
+        ]
 
     metric_to_target = {
-        metric_key: metric_to_target_overrides.get(
-            metric_key,
-            default_metric_to_target.get(metric_key, metric_key),
-        )
+        metric_key: metric_to_target_overrides.get(metric_key, metric_key)
         for metric_key in required_metric_keys
     }
 
@@ -696,7 +709,6 @@ def _load_required_oracle_pipelines(
         for metric_key, model_file in metric_to_model_path.items()
     }
 
-## TODO: Consider refactoring the following functions to a separate module for clarity and maintainability. Remove membrane context
 def oracle_from_params(
     params: dict,
     config: dict = None,
@@ -817,12 +829,26 @@ def oracle_from_params(
 
     return metrics
 
+def _seed_random_state(random_seed):
+    """Seed Python/NumPy/Torch RNGs for reproducible Ax runs."""
+    if random_seed is None:
+        return
+    random.seed(random_seed)
+    np.random.seed(random_seed)
+    try:
+        import torch
+
+        torch.manual_seed(random_seed)
+    except Exception:  # noqa: BLE001 - torch optional/unavailable
+        pass
+
+
 def run_ax_optimization(
     search_space_parameters,
     oracle_from_params,
     config=None,
-    experiment_name="NF_Inverse_Design_Tutorial",
-    experiment_description="Toy inverse design of NF IP membrane recipe",
+    experiment_name=None,
+    experiment_description=None,
     sobol_init=5,
     n_trials=20,
     trial_error=0.01,
@@ -830,6 +856,7 @@ def run_ax_optimization(
     client_path=None,
     load_client=False,
     force_rebuild=False,
+    random_seed=None,
     save_every_trials=None,
     return_trial_df: bool = False,
 ):
@@ -847,6 +874,12 @@ def run_ax_optimization(
     if config is None:
         config = load_config()
 
+    project_name = str(config.get("project", {}).get("name", "ML-MEM"))
+    if experiment_name is None:
+        experiment_name = f"{project_name}_inverse_design"
+    if experiment_description is None:
+        experiment_description = f"Inverse design for project '{project_name}'"
+
     opt_cfg = get_optimization_config(config)
 
     optimization_mode = opt_cfg.get("mode", "scalarized")
@@ -857,6 +890,9 @@ def run_ax_optimization(
         scalarized_cfg = _get_scalarized_objective_config(opt_cfg, require_equation=False)
 
     objective_name = scalarized_cfg.get("name", "scalarizedobjective")
+
+    if random_seed is None:
+        random_seed = opt_cfg.get("random_seed") or config.get("modeling", {}).get("random_state")
 
     if client_path is None:
         client_cache_file = opt_cfg.get("client_cache_file")
@@ -876,6 +912,8 @@ def run_ax_optimization(
             return loaded_client, loaded_results
         if verbose:
             print("No loadable Ax client snapshot found; starting a fresh optimization client.")
+
+    _seed_random_state(random_seed)
 
     client = Client()
 

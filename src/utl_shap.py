@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.model_selection import train_test_split
-from sklearn.utils.multiclass import type_of_target
 
 import sys
 
@@ -16,7 +15,8 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from utl_config_loader import get_model_dir, load_config
-from utl_modelling import _build_feature_table, _resolve_model_path
+from utl_modelling import _infer_task, _resolve_model_path
+from utl_model_arch import is_tree_model, normalize_model_key
 
 FONT_SIZE = 20
 FIG_SIZE = (20, 16)
@@ -38,12 +38,12 @@ def _build_custom_cmap(plotting_cfg):
     )
 
 
-def _infer_model_task_from_target(y):
-    y_non_null = y.dropna()
-    target_kind = type_of_target(y_non_null)
-    if target_kind in {"binary", "multiclass", "multiclass-multioutput"}:
-        return "classifier"
-    return "regressor"
+def _infer_model_task_from_target(y, config=None):
+    """Return task name used by model filenames (classification / regression)."""
+    requested = "auto"
+    if config is not None:
+        requested = config.get("modeling", {}).get("task", "auto")
+    return _infer_task(requested, None, y)
 
 def shap_explain_target(
     target,
@@ -102,12 +102,12 @@ def shap_explain_target(
 
     print(f"\n=== SHAP interpretation for target: {target} ===")
 
-    # Rebuild feature table first so we can infer task from target data type.
-    X, y = _build_feature_table(df_enriched, features_to_model=features_to_model, target=target)
-    inferred_task = _infer_model_task_from_target(y)
-
     config = _resolve_config(config)
     modeling_cfg = config.get("modeling", {})
+
+    # Same task inference as train_model (honours modeling.task + auto rules).
+    y_full = df_enriched[target].dropna()
+    inferred_task = _infer_model_task_from_target(y_full, config=config)
     plotting_cfg = _get_plotting_cfg(config)
     if random_state is None:
         random_state = modeling_cfg.get("random_state", 42)
@@ -142,31 +142,40 @@ def shap_explain_target(
     pipe = joblib.load(model_path)
     print(f"Loaded model from: {model_path}")
 
+    # Rebuild model inputs from the SAVED pipeline's expected columns so the
+    # SHAP background sample matches the fitted feature representation exactly.
+    preprocess_only = pipe.named_steps["preprocess"]
+    expected_columns = list(preprocess_only.feature_names_in_)
+    missing_columns = [c for c in expected_columns if c not in df_enriched.columns]
+    if missing_columns:
+        raise KeyError(
+            "Missing expected model input columns for SHAP background data: "
+            f"{missing_columns}. Available: {sorted(df_enriched.columns.tolist())}"
+        )
+
+    X = df_enriched[expected_columns].copy()
+    y = df_enriched[target].copy()
+    valid_mask = y.notna()
+    X = X[valid_mask].reset_index(drop=True)
+    y = y[valid_mask].reset_index(drop=True)
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=random_state
     )
 
     # Use the fitted preprocessing step from the saved pipeline directly.
-    preprocess_only = pipe.named_steps["preprocess"]
-    etr = pipe.named_steps["model"]
+    model_step = pipe.named_steps["model"]
+    model_key = normalize_model_key(selected_model_name)
 
-    # Transform training features into the representation used by the tree model.
+    # Transform training features into the representation used by the model.
     # Do not refit here: refitting would desynchronize SHAP feature names from the saved model.
     X_train_trans = preprocess_only.transform(X_train)
 
     # Recover transformed feature names from the fitted preprocessing step.
-    categorical_cols = X_train.select_dtypes(include=["object"]).columns.tolist()
-    numerical_cols = X_train.select_dtypes(exclude=["object"]).columns.tolist()
-
-    onehot_feature_names = []
-    if categorical_cols:
-        ohe = preprocess_only.named_transformers_["cat"]
-        onehot_feature_names = ohe.get_feature_names_out(categorical_cols).tolist()
-
-    feature_names = onehot_feature_names + numerical_cols
-
-    # Build SHAP explainer for tree ensemble
-    explainer = shap.TreeExplainer(etr)
+    feature_names = [
+        name.split("__", 1)[-1] if "__" in name else name
+        for name in preprocess_only.get_feature_names_out()
+    ]
 
     # Optional subsampling keeps SHAP responsive on larger datasets
     if X_train_trans.shape[0] > max_samples:
@@ -175,7 +184,23 @@ def shap_explain_target(
     else:
         X_shap = X_train_trans
 
-    shap_values = explainer.shap_values(X_shap)
+    # Tree models -> TreeExplainer; linear-ish models -> LinearExplainer; else skip.
+    if is_tree_model(model_key):
+        explainer = shap.TreeExplainer(model_step)
+        shap_values = explainer.shap_values(X_shap)
+    else:
+        try:
+            # Background sample for linear / coefficient-based explainers.
+            bg_size = min(100, X_shap.shape[0])
+            background = shap.sample(X_shap, bg_size) if hasattr(shap, "sample") else X_shap[:bg_size]
+            explainer = shap.LinearExplainer(model_step, background)
+            shap_values = explainer.shap_values(X_shap)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"SHAP is not supported for model '{model_key}' "
+                f"({type(model_step).__name__}): {exc}. Skipping SHAP plots."
+            )
+            return None, feature_names, None, None
 
     # SHAP beeswarm: global importance + direction of effect
     plt.rcParams.update({'font.size': font_size})
@@ -197,8 +222,7 @@ def shap_explain_target(
         spine.set_visible(True)
         spine.set_linewidth(1.5)
         spine.set_edgecolor('black')
-
-    plt.show()
+    summary_fig = plt.gcf()
 
     # SHAP bar chart: mean absolute SHAP magnitude per feature
     shap.summary_plot(
@@ -223,6 +247,6 @@ def shap_explain_target(
         spine.set_linewidth(1.5)
         spine.set_edgecolor('black')
     plt.title(f"SHAP feature importance : {target}", fontsize=font_size, fontweight='bold')
-    plt.show()
+    bar_fig = plt.gcf()
 
     return shap_values, feature_names, summary_fig, bar_fig

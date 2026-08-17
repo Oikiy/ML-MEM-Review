@@ -1,21 +1,81 @@
-# ML-MEM Membrane ML Workflow Configuration
-# This file contains all project-specific settings, paths, and processing parameters.
-# Values can be overridden at runtime or by setting environment variables.
+# =====================================================================
+#  ML-MEM — Membrane machine-learning workflow
+# =====================================================================
+#  For MOST USERS, edit only the `data` section below, then run:
+#      python -m run_pipeline --config config.yaml
+#  or open the teaching notebook (notebooks/Complete_notebook/Ml-MEM-Tut.ipynb).
+#
+#  Everything under "ADVANCED OPTIONS" already has working defaults (the
+#  tutorial membrane problem is pre-filled), so you can leave it alone until
+#  you want more control.
+# =====================================================================
 
+# ---------------------------------------------------------------------
+#  DATA  (the only section most users must edit)
+# ---------------------------------------------------------------------
+data:
+  # File name (or path) of your dataset inside data/raw/.
+  # Supported: .xlsx, .xls, .csv
+  dataset: "TutorialDataSet.xlsx"
+
+  # Optional Excel sheet name. Leave empty for the first sheet.
+  sheet: ""
+
+  # Target (output / KPI) column(s) to predict. Add as many as you like.
+  targets:
+    - "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}"
+    - "solute1_Rejection"
+
+# =====================================================================
+#  ADVANCED OPTIONS  (working defaults are pre-filled)
+# =====================================================================
+
+# ---------------------------------------------------------------------
+#  FEATURES (columns used as model inputs)
+#  mode = "manual": use exactly the columns in `include` below
+#          (pre-filled with the tutorial membrane features below).
+#  mode = "auto":   automatically use every usable column except the
+#          targets (great when trying the workflow on your own dataset).
+# ---------------------------------------------------------------------
+features:
+  mode: "manual"
+  include:
+    - "Dope1_Monomer1_Name"
+    - "Dope1_Monomer1_Mass"
+    - "Dope1_Solvent1_Mass"
+    - "Dope1_Add1_Name"
+    - "Dope1_Add1_Mass"
+    - "Dope2_Monomer1_Mass"
+    - "Dope2_Solvent1_Name"
+    - "Dope2_Solvent1_Mass"
+    - "Dope2_Polymerization_Time_min"
+    - "Solute1_Name"
+    - "S1_Cation"
+    - "S1_cat_stoke_radius"
+    - "S1_cat_charge"
+    - "S1_an_stoke_radius"
+    - "S1_an_charge"
+  exclude: []
+  missing_value_threshold: 0.3
+  low_variance_threshold: 1e-9
+
+# ---------------------------------------------------------------------
+#  PROJECT LAYOUT  (paths relative to the project root)
+# ---------------------------------------------------------------------
 project:
-  # Project structure paths (relative to project root)
   name: "ML-MEM-Review"
   paths:
     data_raw: "data/raw"
     models: "models"
     outputs_figures: "outputs/figures"
 
+# ---------------------------------------------------------------------
+#  PLOTTING
+# ---------------------------------------------------------------------
 plotting:
-  # Global figure sizing and font configuration
   global_figure_size: [14, 10]
   font_size: 20
   dpi: 300
-  # Color palette for distribution plots
   colors:
     boxplot: ["#25517e", "#4c7da1", "#cd7a69"]
     violin: ["#cedae6", "#abc5d3", "#e9c2b3"]
@@ -23,117 +83,62 @@ plotting:
     median: "#a73b3e"
     outlier: "#872d30"
     edge: "#81858a"
-  # Custom colormap for heatmaps and surface plots
   custom_colormap:
     name: "my_palette"
     colors: ["#7FAFD9", "#FFF8EE", "#E38AAA"]
 
-data:
-  # Raw dataset configuration
-  dataset: "TutorialDataSet.xlsx"
-
-project_definition:
-  # Canonical selected targets and raw columns shown before feature engineering.
-  # target entries are validated against df.columns in the notebook.
-  target:
-    - "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}"
-    - "solute1_Rejection"
-  features:
-    # Aqueous phase properties
-    - "Dope1_Monomer1_Name"
-    - "Dope1_Monomer1_Mass"
-    - "Dope1_Solvent1_Name"
-    - "Dope1_Solvent1_Mass"
-    - "Dope1_Add1_Name"
-    - "Dope1_Add1_Mass"
-    - "Dope1_Treatment"
-    - "Dope1_Polymerization_Time_min"
-    - "Dope1_Polymerization_Temp_degC"
-    - "Dope1_Posttreat"
-    # Organic phase properties
-    - "Dope2_Monomer1_Name"
-    - "Dope2_Monomer1_Mass"
-    - "Dope2_Solvent1_Name"
-    - "Dope2_Solvent1_Mass"
-    - "Dope2_Treatment"
-    - "Dope2_Polymerization_Time_min"
-    - "Dope2_Polymerization_Temp_degC"
-    - "Dope2_Posttreat"
-    # Measuring conditions
-    - "Mem_Compaction_Pressure_bar"
-    - "Mem_Compaction_Time_hr"
-    - "Filtration_Area_cm2"
-    - "Filtration_Time_min"
-    - "Water_Permeation_Pressure_bar"
-    - "Solute1_Type"
-    - "Solute1_Name"
-    - "Solute1_Feed_ppm"
-    - "S1_Cation"
-    - "S1_Anion"
-
+# ---------------------------------------------------------------------
+#  FEATURE ENGINEERING  (enrichment lookups + synthetic features)
+#  Lookups merge ion/property tables on the columns below. For a new
+#  dataset, either adapt the paths/keys or delete this section.
+# ---------------------------------------------------------------------
 feature_engineering:
-  # Feature filtering thresholds
-  low_variance_threshold: 1e-9
-  missing_value_threshold: 0.3
-  # Grouped lookup definitions. Each entry configures one enrichment join.
   lookups:
-    - align_column: "S1_Cation"   # Column in the main dataset
-      lookup_key: "Cation"        # Matching key column in lookup file
+    - align_column: "S1_Cation"
+      lookup_key: "Cation"
       lookup_path: "data/raw/cation_prop.xlsx"
       lookup_prefix: "S1_cat_"
-      
+
     - align_column: "S1_Anion"
       lookup_key: "Anion"
       lookup_path: "data/raw/anion_prop.xlsx"
       lookup_prefix: "S1_an_"
-  # Optional synthetic features defined by output name and full arithmetic equation.
-  # Each equation can reference existing numeric columns directly.
+
   synthetic_feature:
     - name: "total_dope_mass"
       equation: "Dope1_Monomer1_Mass + Dope1_Add1_Mass + Dope2_Monomer1_Mass"
 
     - name: "aqueous_to_organic_monomer_ratio"
       equation: "Dope1_Monomer1_Mass / Dope2_Monomer1_Mass"
-      
+
+# ---------------------------------------------------------------------
+#  EDA / DATA-ANALYSIS PLOTS
+# ---------------------------------------------------------------------
 data_analysis:
-  # Correlation analysis thresholds for heatmap filtering
   correlation_thresholds: [0, 0.1]
-  # Show numeric values inside Pearson heatmap cells.
   pearson_heatmap_show_annotations: true
 
-features_to_model:
-  # Features used for all models (must be present in enriched dataset)
-  - "Dope1_Monomer1_Name"
-  - "Dope1_Monomer1_Mass"
-  - "Dope1_Solvent1_Mass"
-  - "Dope1_Add1_Name"
-  - "Dope1_Add1_Mass"
-  - "Dope2_Monomer1_Mass"
-  - "Dope2_Solvent1_Name"
-  - "Dope2_Solvent1_Mass"
-  - "Dope2_Polymerization_Time_min"
-  - "Solute1_Name"
-  - "S1_Cation"
-  - "S1_cat_stoke_radius"
-  - "S1_cat_charge"
-  - "S1_an_stoke_radius"
-  - "S1_an_charge"
-
-
-
+# ---------------------------------------------------------------------
+#  MODELING  (pre-filled with sensible defaults for the tutorial)
+# ---------------------------------------------------------------------
 modeling:
-  # Model training configuration
+  # Switch architecture with one key (no code edits):
+  #   regression:     extratrees | randomforest | histgradientboosting | ridge | elasticnet | linear
+  #   classification: extratrees | randomforest | histgradientboosting | logistic | ridge
   model_selection: "extratrees"
+  task: "regression"            # tutorial KPIs are continuous
   random_state: 42
   train_test_ratio: 0.2
   n_estimators: 300
   cv_folds: 5
   use_kfold: true
   use_hyperparam_tuning: true
-  # Search backend for hyperparameter tuning: randomizedsearchcv | gridsearchcv | bayessearchcv
   search_cv: "randomizedsearchcv"
   n_iter_search: 20
-  # PipelineConfig-style definition (see src/utl_model_arch.py)
+  # Map Ax objective metric keys (original_name) -> trained model target columns
+  oracle_model_targets:
+    PureWaterPermeability: "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}"
+    solute1Rejection: "solute1_Rejection"
   pipeline:
     categorical_encoder: "onehot"
     categorical_encoder_params: {}
@@ -149,83 +154,77 @@ modeling:
       random_state: 42
     preprocess_params: {}
     pipeline_params: {}
-  # RandomizedSearchCV search space for ExtraTreesRegressor
+  # Hyperparameter search grid. Omit or set null to use built-in defaults
+  # for the chosen model_selection. Tree grid below matches extratrees/RF.
   param_dist:
     model__n_estimators: [200, 300, 500, 800]
     model__max_depth: [null, 10, 20, 40]
     model__min_samples_leaf: [1, 2, 5]
     model__max_features: ["sqrt", "log2", 0.5, 0.8]
-  # Model file naming pattern (target, model key, and inferred task label)
   model_filename_pattern: "{target}_{model}_{task}.pkl"
-  
 
-
+# ---------------------------------------------------------------------
+#  INVERSE DESIGN (Bayesian optimization with Ax)
+#  Pre-filled with the tutorial membrane search space. To try it on your
+#  own system, edit `search_space` and `constant_parameters` to match the
+#  formulation variables you can actually change in the lab.
+#  mode: "scalarized" (single score) or "multiobjective" (Pareto frontier)
+# ---------------------------------------------------------------------
 optimization:
-  # Bayesian optimization (Ax) configuration
-  mode: "multiobjective"  # Options: 'scalarized', 'multiobjective'
+  mode: "multiobjective"
   sobol_init: 5
   n_trials: 100
   save_checkpoint_every: 5
   client_cache_file: "ax_client.pkl"
 
-  # Used when mode == 'scalarized'. The equation is evaluated against one-row
-  # metric variables produced by the oracle. Available variables include:
-  # - objective-space metrics: normPureWaterPermeability, solute1Rejection
-  # - direction-aware objective aliases: opt_normPureWaterPermeability, opt_solute1Rejection
-  # - raw/original model outputs when available: PureWaterPermeability,
-  #   raw_PureWaterPermeability, pred_PureWaterPermeability, raw_solute1Rejection,
-  #   pred_solute1Rejection. If an original name collides with an objective-space
-  #   metric name, the bare name keeps the objective-space value and the raw/pred_
-  #   aliases hold the surrogate prediction.
   scalarized_objective:
     name: "scalarizedobjective"
     equation: "0.1 * opt_normPureWaterPermeability + 0.9 * opt_solute1Rejection"
-  
-  # Objective definitions with directions, thresholds, and normalization ranges
+
   objectives:
     - name: "normPureWaterPermeability"
       original_name: "PureWaterPermeability"
+      model_target: "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}"
       direction: "maximize"
       threshold: ">=0.06"
       normalization_min: 4.4
       normalization_max: 85.1
-      
+
     - name: "solute1Rejection"
       original_name: "solute1Rejection"
+      model_target: "solute1_Rejection"
       direction: "maximize"
       threshold: ">=0.75"
       normalization_min: 2.0
       normalization_max: 99.99
-  
-  # Search space: variables controllable in the experiment
+
   search_space:
     - name: "Dope1_Monomer1_Name"
       type: "choice"
       values: ["PIP", "PEI"]
       is_ordered: false
-      
+
     - name: "Dope1_Monomer1_Mass"
       type: "range"
       bounds: [0.0001, 0.02]
-      
+
     - name: "Dope1_Add1_Name"
       type: "choice"
       values: ["SLS", "CTAB", "Tween80"]
       is_ordered: false
-      
+
     - name: "Dope1_Add1_Mass"
       type: "range"
       bounds: [0.000393, 0.28838]
-      
+
     - name: "Dope2_Monomer1_Mass"
       type: "range"
       bounds: [0.0005, 0.0015]
-      
+
     - name: "Dope2_Polymerization_Time_min"
       type: "range"
       bounds: [0.083, 20.0]
-  
-  # Fixed parameters (context in which optimization occurs)
+
   constant_parameters:
     Dope2_Solvent1_Name: "n-hexane"
     Solute1_Name: "MgCl_{2}"
@@ -238,8 +237,6 @@ optimization:
     Dope2_Solvent2_Mass: 0.0
     Dope2_Add_Mass: 0.0
 
-  # Computed parameters derived from search-space and fixed context.
-  # Equations are evaluated in order and can reference earlier computed values.
   computed_parameters:
     - name: "Dope1_Solvent1_Mass"
       equation: "1.0 - Dope1_Monomer1_Mass - Dope1_Add1_Mass - Dope1_Monomer2_Mass - Dope1_Solvent2_Mass - Dope1_Add2_Mass"
@@ -249,7 +246,6 @@ optimization:
       equation: "1.0 - Dope2_Monomer1_Mass - Dope2_Monomer2_Mass - Dope2_Solvent2_Mass - Dope2_Add_Mass"
       min_value: 0.0
 
-  # Inverse-design plotting defaults used by src/utl_Ax.py.
   inverse_design:
     figure_size: [12, 8]
     xtick_step: 10

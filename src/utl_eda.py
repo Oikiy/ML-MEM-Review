@@ -292,5 +292,6 @@ def compute_and_plot_pearson_heatmap(
 
     plt.title(f'Pairwise Pearson Correlation Heatmap > {threshold}', fontsize=font_size, fontfamily='Arial', fontweight='bold')
     plt.tight_layout()
-    plt.show()
-    return corr_matrix
+    fig = plt.gcf()
+    # Return (corr_matrix, fig). Callers that only need the matrix can unpack: corr, _ = ...
+    return corr_matrix, fig

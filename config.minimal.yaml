@@ -1,0 +1,35 @@
+# Minimal ML-MEM configuration for a NEW, unrelated dataset.
+#
+# Copy this file into your own project, edit only the two values below,
+# put your dataset into data/raw/, then run:
+#
+#     pip install -e .
+#     python -m run_pipeline --config config.yaml
+#
+# Feature selection is automatic ("auto"): every usable, non-constant
+# column except data.targets is used as an ML feature. No other edits are
+# required to start.
+#
+# Optional later:
+#   modeling.task: auto | regression | classification
+#   feature_engineering / optimization blocks (copy from full config.yaml)
+#
+# Note: Ax inverse design (optimization block) is for CONTINUOUS regression
+# targets only. Omit it for classification problems.
+
+project:
+  name: "my_project"
+
+data:
+  dataset: "my_data.xlsx"      # file inside data/raw/ (or a .csv)
+  sheet: ""                    # leave empty to read the first sheet
+  targets: ["your_kpi_column"] # one or more output columns
+
+features:
+  mode: "auto"                 # auto = infer features from your columns
+
+# modeling:
+#   task: auto                 # or force: regression | classification
+#   model_selection: extratrees
+#   # regression:     extratrees | randomforest | histgradientboosting | ridge | elasticnet | linear
+#   # classification: extratrees | randomforest | histgradientboosting | logistic | ridge

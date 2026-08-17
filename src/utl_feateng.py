@@ -224,12 +224,8 @@ def feature_engineering(
     normalized_lookups = []
 
     if not grouped_lookups:
-        raise ValueError(
-            "Missing feature_engineering config. Please define non-empty "
-            "feature_engineering.lookups."
-        )
-
-    if not isinstance(grouped_lookups, list):
+        print("No feature_engineering.lookups configured; skipping enrichment lookups.")
+    elif not isinstance(grouped_lookups, list):
         raise ValueError(
             "feature_engineering.lookups must be a list of lookup definitions."
         )

@@ -1,0 +1,25 @@
+# Classification example — discrete labels, confusion plots.
+# Inverse design (optimization) is intentionally omitted.
+# Run from repo root:
+#   python -m run_pipeline --config examples/02_classification/config.yaml
+
+project:
+  name: "example_02_classification"
+
+data:
+  dataset: "toy_classification.csv"
+  sheet: ""
+  targets: ["label"]
+
+features:
+  mode: "auto"
+
+modeling:
+  model_selection: "extratrees"
+  task: "classification"
+  use_hyperparam_tuning: false
+  n_estimators: 100
+  random_state: 42
+  cv_folds: 3
+
+# No optimization block: Ax inverse design is for continuous targets only.
