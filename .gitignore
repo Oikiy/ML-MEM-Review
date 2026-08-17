@@ -235,3 +235,6 @@ ax_client.json
 # Generated figures / reports
 outputs/
 **/outputs/
+
+# Colab bootstrap marker (created under /content clone)
+.colab_install_ok

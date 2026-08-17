@@ -17,6 +17,10 @@ pip install -e .
 # from the repository root
 ```
 
+**Google Colab:** clone the full repo, `cd` to the root, then `pip install -e .`
+and run the same `python -m run_pipeline --config examples/...` commands.
+Step-by-step: [`docs/COLAB.md`](../docs/COLAB.md).
+
 ## Curriculum
 
 | # | Folder | Teaches |
@@ -24,6 +28,8 @@ pip install -e .
 | 01 | [`01_minimal_regression/`](01_minimal_regression/) | New continuous dataset, `features.mode: auto` |
 | 02 | [`02_classification/`](02_classification/) | Discrete labels, confusion plots, no inverse design |
 | 03 | [`03_switch_models/`](03_switch_models/) | One-key `model_selection` switch |
+| 04 | [`04_feature_selection/`](04_feature_selection/) | Choose features: `manual` include vs `auto` + exclude |
+| 05 | [`05_inverse_design_controls/`](05_inverse_design_controls/) | Search space, constants, objectives, scalarized weights |
 
 ## Run pattern (all examples)
 

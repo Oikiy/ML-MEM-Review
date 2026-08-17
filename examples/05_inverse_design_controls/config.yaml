@@ -1,0 +1,125 @@
+# Inverse-design controls example.
+# Teaches: optimization.search_space, constant_parameters, objectives, mode.
+#
+# Run from repo root (needs ax-platform, already in package deps):
+#   python -m run_pipeline --config examples/05_inverse_design_controls/config.yaml --force-retrain
+#
+# Keep n_trials small here so the example finishes quickly.
+
+project:
+  name: "example_05_inverse_design_controls"
+
+data:
+  dataset: "toy_multiobjective.csv"
+  sheet: ""
+  # Both KPIs are continuous → eligible for Ax inverse design
+  targets: ["permeance", "rejection"]
+
+features:
+  mode: "manual"
+  include:
+    - "temperature_C"
+    - "pressure_bar"
+    - "additive_wt_pct"
+    - "monomer"
+    - "polymerization_time_min"
+    - "solvent"
+
+modeling:
+  model_selection: "extratrees"
+  task: "regression"
+  use_hyperparam_tuning: false
+  n_estimators: 120
+  random_state: 42
+  cv_folds: 3
+  # Optional alias map (useful when objective names differ from column names).
+  # Here names already match data.targets, so this is identity.
+  oracle_model_targets:
+    permeance: "permeance"
+    rejection: "rejection"
+
+# ---------------------------------------------------------------------
+# INVERSE DESIGN (Ax) — edit this block to control the search
+# ---------------------------------------------------------------------
+optimization:
+  # "scalarized" = one weighted score (simplest to start)
+  # "multiobjective" = Pareto frontier (uncomment objectives thresholds below)
+  mode: "scalarized"
+
+  sobol_init: 4          # random warm-start trials
+  n_trials: 12           # total BO trials (keep small for demos)
+  save_checkpoint_every: 4
+  client_cache_file: "ax_client.pkl"
+
+  # Weighted single objective (only used when mode: scalarized).
+  # Prefix normalized metrics with opt_  (see utl_Ax scalarizer).
+  scalarized_objective:
+    name: "scalarizedobjective"
+    # Emphasize rejection (0.7) over permeance (0.3) — change weights to rebalance
+    equation: "0.3 * opt_permeance + 0.7 * opt_rejection"
+
+  objectives:
+    # name: Ax metric name (and history column)
+    # original_name: must match a data.targets column (or map via model_target)
+    - name: "permeance"
+      original_name: "permeance"
+      model_target: "permeance"
+      direction: "maximize"
+      # normalization maps raw KPI → ~[0,1] for scalarization / thresholds
+      normalization_min: 5.0
+      normalization_max: 55.0
+      # multiobjective only — soft constraint on normalized value:
+      # threshold: ">=0.2"
+
+    - name: "rejection"
+      original_name: "rejection"
+      model_target: "rejection"
+      direction: "maximize"
+      normalization_min: 55.0
+      normalization_max: 95.0
+      # threshold: ">=0.3"
+
+  # --- What Ax is allowed to vary (the "parameter grid") ---
+  search_space:
+    - name: "temperature_C"
+      type: "range"
+      bounds: [30.0, 70.0]          # narrower than full data range = safer lab window
+
+    - name: "pressure_bar"
+      type: "range"
+      bounds: [3.0, 8.0]
+
+    - name: "additive_wt_pct"
+      type: "range"
+      bounds: [0.5, 4.0]
+
+    - name: "monomer"
+      type: "choice"
+      values: ["PIP", "PEI"]
+      is_ordered: false
+
+    - name: "polymerization_time_min"
+      type: "range"
+      bounds: [1.0, 12.0]
+
+  # --- Held fixed during search (still needed if the model was trained on them) ---
+  constant_parameters:
+    solvent: "hexane"
+
+  # Optional mass-balance style derived knobs (none needed for this toy set)
+  computed_parameters: []
+
+  inverse_design:
+    figure_size: [10, 6]
+    title: "Inverse design (toy multi-KPI)"
+    save_name: "inverse_design_metrics_evolution.png"
+    aggregate_name: "objective_sum"
+    aggregate_display_name: "Sum of objectives"
+    make_parallel_coordinates: false
+    response_map_specs:
+      - x_col: "rejection"
+        y_col: "permeance"
+        z_col: "objective_sum"
+      - x_col: "temperature_C"
+        y_col: "additive_wt_pct"
+        z_col: "objective_sum"

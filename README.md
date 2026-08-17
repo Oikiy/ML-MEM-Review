@@ -87,6 +87,13 @@ dataset before running. The companion notebook
 `notebooks/Complete_notebook/Ml-MEM-Tut.ipynb` walks through the same pipeline
 cell by cell for teaching.
 
+## Google Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/notebooks/Complete_notebook/Ml-MEM-Tut.ipynb)
+
+Full clone + install + examples: see **[`docs/COLAB.md`](docs/COLAB.md)**.  
+The tutorial notebook includes a **Colab bootstrap** cell (clone repo, `pip install -e .`, inline plots).
+
 ## Examples gallery (short recipes)
 
 Self-contained mini-projects under [`examples/`](examples/) — each has its own
@@ -97,6 +104,8 @@ Self-contained mini-projects under [`examples/`](examples/) — each has its own
 | [`01_minimal_regression`](examples/01_minimal_regression/) | New continuous dataset, auto features |
 | [`02_classification`](examples/02_classification/) | Discrete labels, confusion plots |
 | [`03_switch_models`](examples/03_switch_models/) | `model_selection` (e.g. RandomForest) |
+| [`04_feature_selection`](examples/04_feature_selection/) | Manual `include` vs `auto` + `exclude` |
+| [`05_inverse_design_controls`](examples/05_inverse_design_controls/) | Ax search space, constants, objectives |
 
 ```bash
 python -m run_pipeline --config examples/01_minimal_regression/config.yaml --force-retrain

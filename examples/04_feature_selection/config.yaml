@@ -1,0 +1,53 @@
+# Feature-set selection example.
+# Teaches: features.mode (manual | auto), include, exclude.
+#
+# Run from repo root:
+#   python -m run_pipeline --config examples/04_feature_selection/config.yaml --stage model --force-retrain
+#
+# The CSV has real process columns PLUS distractors (batch_id, noise, notes).
+# Default below is MANUAL: only physically controllable / meaningful inputs.
+
+project:
+  name: "example_04_feature_selection"
+
+data:
+  dataset: "toy_features.csv"
+  sheet: ""
+  targets: ["permeance"]
+
+# ---------------------------------------------------------------------
+# FEATURE SELECTION — pick ONE pattern (A or B) by editing mode/include/exclude
+# ---------------------------------------------------------------------
+features:
+  # --- Pattern A (default): explicit allow-list (recommended for lab recipes) ---
+  mode: "manual"
+  include:
+    - "temperature_C"
+    - "pressure_bar"
+    - "additive_wt_pct"
+    - "catalyst"
+  # Columns intentionally left OUT of the model:
+  #   batch_id      — row identifier, not a physical driver
+  #   noise_uniform — pure noise
+  #   lab_note      — free text / labels unrelated to the KPI
+  #   unused_flag   — unused binary flag
+
+  # --- Pattern B: start from everything, then drop junk ---
+  # mode: "auto"
+  # exclude:
+  #   - "batch_id"
+  #   - "noise_uniform"
+  #   - "lab_note"
+  #   - "unused_flag"
+  # (targets are always excluded automatically)
+
+  missing_value_threshold: 0.3
+  low_variance_threshold: 1e-9
+
+modeling:
+  model_selection: "extratrees"
+  task: "regression"
+  use_hyperparam_tuning: false
+  n_estimators: 100
+  random_state: 42
+  cv_folds: 3
