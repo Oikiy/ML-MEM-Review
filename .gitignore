@@ -238,3 +238,6 @@ outputs/
 
 # Colab bootstrap marker (created under /content clone)
 .colab_install_ok
+
+# Local manuscript / reference PDFs (not the public docs/ guide)
+/doc/
