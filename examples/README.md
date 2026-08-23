@@ -17,19 +17,21 @@ pip install -e .
 # from the repository root
 ```
 
-**Google Colab:** clone the full repo, `cd` to the root, then `pip install -e .`
-and run the same `python -m run_pipeline --config examples/...` commands.
-Step-by-step: [`docs/COLAB.md`](../docs/COLAB.md).
+**Google Colab (easiest):** open the **Colab** link in the table below (one
+notebook per example). Step-by-step notes: [`docs/COLAB.md`](../docs/COLAB.md).
 
 ## Curriculum
 
-| # | Folder | Teaches |
-|---|--------|---------|
-| 01 | [`01_minimal_regression/`](01_minimal_regression/) | New continuous dataset, `features.mode: auto` |
-| 02 | [`02_classification/`](02_classification/) | Discrete labels, confusion plots, no inverse design |
-| 03 | [`03_switch_models/`](03_switch_models/) | One-key `model_selection` switch |
-| 04 | [`04_feature_selection/`](04_feature_selection/) | Choose features: `manual` include vs `auto` + exclude |
-| 05 | [`05_inverse_design_controls/`](05_inverse_design_controls/) | Search space, constants, objectives, scalarized weights |
+| # | Folder | Teaches | Colab |
+|---|--------|---------|-------|
+| 01 | [`01_minimal_regression/`](01_minimal_regression/) | New continuous dataset, `features.mode: auto` | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/01_minimal_regression/Colab.ipynb) |
+| 02 | [`02_classification/`](02_classification/) | Discrete labels, confusion plots, no inverse design | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/02_classification/Colab.ipynb) |
+| 03 | [`03_switch_models/`](03_switch_models/) | One-key `model_selection` switch | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/03_switch_models/Colab.ipynb) |
+| 04 | [`04_feature_selection/`](04_feature_selection/) | Choose features: `manual` include vs `auto` + exclude | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/04_feature_selection/Colab.ipynb) |
+| 05 | [`05_inverse_design_controls/`](05_inverse_design_controls/) | Search space, constants, objectives, scalarized weights | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/05_inverse_design_controls/Colab.ipynb) |
+
+Each folder has a thin **`Colab.ipynb`**: bootstrap → show config → `run_pipeline` → display figures.
+Canonical truth remains `config.yaml` + CLI (below).
 
 ## Run pattern (all examples)
 

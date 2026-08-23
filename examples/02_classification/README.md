@@ -9,6 +9,13 @@ confusion-matrix figures instead of parity plots.
 - `modeling.task: classification` (optional; auto would also work here)
 - **No `optimization` block** — Ax inverse design is continuous/regression only
 
+
+## Google Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/02_classification/Colab.ipynb)
+
+Or open [Colab.ipynb](Colab.ipynb) in this folder (bootstrap → run pipeline → show figures).
+
 ## Run
 
 From the **repository root**:

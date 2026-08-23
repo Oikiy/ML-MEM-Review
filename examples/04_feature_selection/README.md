@@ -56,6 +56,13 @@ on a new spreadsheet; switch to `manual` once the feature set is settled.
 4. After training, check **SHAP**: if a “feature” dominates for no physical
    reason, it is often leakage or a distractor — remove it and retrain.
 
+
+## Google Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/04_feature_selection/Colab.ipynb)
+
+Or open [Colab.ipynb](Colab.ipynb) in this folder (bootstrap → run pipeline → show figures).
+
 ## Run
 
 From the **repository root**:

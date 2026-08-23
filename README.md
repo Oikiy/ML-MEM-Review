@@ -99,13 +99,13 @@ The tutorial notebook includes a **Colab bootstrap** cell (clone repo, `pip inst
 Self-contained mini-projects under [`examples/`](examples/) — each has its own
 `config.yaml` and tiny synthetic data:
 
-| Example | Teaches |
-|---------|---------|
-| [`01_minimal_regression`](examples/01_minimal_regression/) | New continuous dataset, auto features |
-| [`02_classification`](examples/02_classification/) | Discrete labels, confusion plots |
-| [`03_switch_models`](examples/03_switch_models/) | `model_selection` (e.g. RandomForest) |
-| [`04_feature_selection`](examples/04_feature_selection/) | Manual `include` vs `auto` + `exclude` |
-| [`05_inverse_design_controls`](examples/05_inverse_design_controls/) | Ax search space, constants, objectives |
+| Example | Teaches | Colab |
+|---------|---------|-------|
+| [`01_minimal_regression`](examples/01_minimal_regression/) | New continuous dataset, auto features | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/01_minimal_regression/Colab.ipynb) |
+| [`02_classification`](examples/02_classification/) | Discrete labels, confusion plots | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/02_classification/Colab.ipynb) |
+| [`03_switch_models`](examples/03_switch_models/) | `model_selection` (e.g. RandomForest) | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/03_switch_models/Colab.ipynb) |
+| [`04_feature_selection`](examples/04_feature_selection/) | Manual `include` vs `auto` + `exclude` | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/04_feature_selection/Colab.ipynb) |
+| [`05_inverse_design_controls`](examples/05_inverse_design_controls/) | Ax search space, constants, objectives | [Open](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/05_inverse_design_controls/Colab.ipynb) |
 
 ```bash
 python -m run_pipeline --config examples/01_minimal_regression/config.yaml --force-retrain

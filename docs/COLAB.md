@@ -43,30 +43,26 @@ If Ax import fails, re-run bootstrap or:
 
 ---
 
-## B. Examples gallery (shell cells)
+## B. Examples gallery (separate Colab notebooks)
 
-In a **fresh Colab notebook** (or after bootstrap so the repo exists):
+Each example has a thin **`Colab.ipynb`** (bootstrap → show config → run pipeline → show figures):
 
-```python
-import os
-os.chdir("/content/ML-MEM-Review")  # after clone; adjust if needed
-```
+| Example | Open in Colab |
+|---------|----------------|
+| 01 minimal regression | [Colab](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/01_minimal_regression/Colab.ipynb) |
+| 02 classification | [Colab](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/02_classification/Colab.ipynb) |
+| 03 switch models | [Colab](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/03_switch_models/Colab.ipynb) |
+| 04 feature selection | [Colab](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/04_feature_selection/Colab.ipynb) |
+| 05 inverse-design controls | [Colab](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/05_inverse_design_controls/Colab.ipynb) |
+
+Or from a shell after clone:
 
 ```bash
+cd /content/ML-MEM-Review   # after bootstrap/clone
 pip install -e .
-```
 
-```bash
-# Fast smoke (train only)
-python -m run_pipeline --config examples/01_minimal_regression/config.yaml --stage model --force-retrain
-python -m run_pipeline --config examples/02_classification/config.yaml --stage model --force-retrain
-python -m run_pipeline --config examples/03_switch_models/config.yaml --stage model --force-retrain
-python -m run_pipeline --config examples/04_feature_selection/config.yaml --stage model --force-retrain
-```
-
-```bash
-# Full inverse-design demo (slower; needs Ax)
-python -m run_pipeline --config examples/05_inverse_design_controls/config.yaml --force-retrain
+python -m run_pipeline --config examples/01_minimal_regression/config.yaml --force-retrain
+# … same pattern for 02–05
 ```
 
 Artifacts land under each example folder:

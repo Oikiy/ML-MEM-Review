@@ -9,6 +9,13 @@ the data section (features are auto-selected).
 - `features.mode: auto` — no manual feature list
 - No feature-engineering lookups, no optimization block
 
+
+## Google Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/01_minimal_regression/Colab.ipynb)
+
+Or open [Colab.ipynb](Colab.ipynb) in this folder (bootstrap → run pipeline → show figures).
+
 ## Run
 
 From the **repository root**:

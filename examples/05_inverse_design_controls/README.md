@@ -73,6 +73,13 @@ with each trial before oracle prediction.
 **Weight tip:** raise the coefficient on the KPI you care about more
 (`0.7 * opt_rejection` vs `0.3 * opt_permeance` in the default config).
 
+
+## Google Colab
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/examples/05_inverse_design_controls/Colab.ipynb)
+
+Or open [Colab.ipynb](Colab.ipynb) in this folder (bootstrap → run pipeline → show figures).
+
 ## Run
 
 From the **repository root**:
