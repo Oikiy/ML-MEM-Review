@@ -57,6 +57,24 @@ from utl_modelling import _safe_target, evaluate_and_plot_results, train_model  
 STAGES = ["data", "eda", "model", "shap", "optimize"]
 
 
+def normalize_stages(stages="all"):
+    """Return a list of stage names from ``"all"``, ``"eda,model"``, or a list."""
+    if isinstance(stages, str):
+        raw = stages.strip()
+        if raw == "all":
+            stage_list = list(STAGES)
+        else:
+            stage_list = [part.strip() for part in raw.split(",") if part.strip()]
+    else:
+        stage_list = list(stages)
+    unknown = [part for part in stage_list if part not in STAGES]
+    if unknown:
+        raise ValueError(f"Unknown stage(s) {unknown}. Choose from {STAGES} or 'all'.")
+    if not stage_list:
+        raise ValueError(f"No stages given. Choose from {STAGES} or 'all'.")
+    return stage_list
+
+
 def load_data(config):
     """Load the dataset, print a compatibility report, and enrich it."""
     data_paths = get_data_paths(config)
@@ -331,16 +349,7 @@ def run_pipeline(
     if project_root is None and config_path is not None:
         project_root = str(Path(config_path).parent)
 
-    if isinstance(stages, str):
-        if stages == "all":
-            stage_list = STAGES
-        else:
-            stage_list = [part.strip() for part in stages.split(",") if part.strip()]
-    else:
-        stage_list = STAGES if stages == "all" else list(stages)
-    unknown = [part for part in stage_list if part not in STAGES]
-    if unknown:
-        raise ValueError(f"Unknown stage(s) {unknown}. Choose from {STAGES} or 'all'.")
+    stage_list = normalize_stages(stages)
 
     config = load_config(config_path=config_path, project_root=project_root)
     targets = resolve_targets(config)
@@ -379,6 +388,7 @@ def main():
     parser.add_argument(
         "--stage",
         default="all",
+        type=normalize_stages,
         help="Stage(s) to run: all, or a comma-separated list from "
         + ", ".join(STAGES)
         + " (default: all)",

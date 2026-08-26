@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 import pytest
 import yaml
 
-from run_pipeline import run_pipeline
+from run_pipeline import STAGES, normalize_stages, run_pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,10 +60,28 @@ def test_example_02_classification_model_stage(tmp_path):
 
 
 def test_comma_separated_stages_are_parsed():
-    from run_pipeline import run_pipeline
-
+    assert normalize_stages("eda,model") == ["eda", "model"]
+    assert normalize_stages("eda, model") == ["eda", "model"]
+    assert normalize_stages("all") == list(STAGES)
     with pytest.raises(ValueError, match="Unknown stage"):
         run_pipeline(config_path="missing.yaml", stages="eda,not_a_stage")
+
+
+def test_colab_notebooks_sync_clone_and_avoid_comma_stage_flag():
+    nbs = list((ROOT / "examples").glob("*/Colab.ipynb"))
+    nbs.append(ROOT / "notebooks" / "Complete_notebook" / "Ml-MEM-Tut.ipynb")
+    assert len(nbs) >= 6
+    for nb_path in nbs:
+        src = "\n".join("".join(c.get("source") or []) for c in json.loads(
+            nb_path.read_text(encoding="utf-8")
+        )["cells"])
+        assert '"fetch"' in src, nb_path
+        assert "FETCH_HEAD" in src, nb_path
+        assert ".colab_install_ok" in src, nb_path
+        if nb_path.name == "Colab.ipynb":
+            assert "PYTHONPATH" in src, nb_path
+            assert "--stage eda,model" not in src, nb_path
+            assert 'for stage in ("eda", "model"' in src, nb_path
 
 
 @pytest.mark.smoke

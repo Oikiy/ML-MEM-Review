@@ -25,13 +25,17 @@ Open-in-Colab badge (replace branch if needed):
    It will:
    - detect Colab
    - clone the repo if you only opened the `.ipynb` from GitHub
+   - **`git fetch` + `reset --hard` to `origin/main`** if a clone already exists
+     (so the notebook and `/content/ML-MEM-Review` stay on the same commit)
    - `cd` to the repo root
-- `pip install -e ".[all]"`
-    - enable `%matplotlib inline`
+   - `pip install -e ".[all]"` when the clone SHA changed
+   - enable `%matplotlib inline`
 4. Run the remaining cells top to bottom.
 
-If bootstrap already ran and the kernel restarted, run the bootstrap cell again
-(it reuses an existing clone under `/content/ML-MEM-Review`).
+Re-run bootstrap after every GitHub push (or kernel restart). It updates the
+clone under `/content/ML-MEM-Review` and reinstalls only when `HEAD` changed.
+That `reset --hard` **discards local edits** in the clone; set
+`ML_MEM_SKIP_PULL=1` to keep them, or `ML_MEM_FORCE_INSTALL=1` to reinstall.
 
 **Ax / inverse design:** Sections 1–5 work with the core install. Section 6 needs
 `pip install -e ".[all]"` (or at least `".[opt]"`) for `ax-platform` + `botorch`
@@ -92,15 +96,27 @@ Fork users: set `REPO_URL` to your fork before cloning.
 
 | Symptom | Fix |
 |---------|-----|
-| `CalledProcessError` / `run_pipeline exited 1` | Scroll **above** that traceback for the pipeline error. Common: `No module named run_pipeline` (re-run bootstrap with `ML_MEM_FORCE_INSTALL=1`); SHAP crash (examples now use `--stage eda,model`). Runtime must be Python **3.11+** (`!python -V`). |
+| `run_pipeline exited 2` / argparse | `--stage` is one token (`eda` or `eda,model`). Example notebooks call `--stage eda` then `--stage model`. Re-run **bootstrap** so the clone matches this notebook. |
+| `CalledProcessError` / `run_pipeline exited 1` | Scroll **above** that traceback for the pipeline error. Common: `No module named run_pipeline` (re-run bootstrap; `PYTHONPATH=src` is set in example run cells). SHAP is skipped if import/torch fails. Runtime must be Python **3.11+** (`!python -V`). |
+| Notebook newer than clone / stale `/content` | Re-run bootstrap (it `git fetch` + `reset --hard` to `origin/main`). If the **notebook file** itself is old, Runtime → Disconnect and delete runtime, then open from GitHub again. |
 | `Could not find config.yaml` | Bootstrap did not `cd` to repo root; re-run Colab cell or `%cd /content/ML-MEM-Review` |
 | `ModuleNotFoundError: utl_*` | `pip install -e .` from repo root, or ensure `src/` is on `sys.path` (notebook setup does this) |
 | `requires-python >=3.11` / install fails | Runtime → Change runtime type → pick 3.11+ |
 | Ax import skipped | Reinstall: `!pip install -e ".[opt]"` ; restart runtime; re-run bootstrap |
 | Install times out | Re-run `pip install -e ".[all]"`; avoid interrupting torch download |
 | Free tier disconnect mid-BO | Lower `optimization.n_trials` in config; re-run with `--force-retrain` |
-| Example 04/05 missing | Pull latest `main` (those folders must be on the remote) |
+| Example 04/05 missing | Re-run bootstrap (clone must be current `main`) |
 | Figures not shown | Ensure bootstrap ran (`%matplotlib inline`) |
+
+Environment overrides (optional, set before the bootstrap cell):
+
+| Variable | Effect |
+|----------|--------|
+| `ML_MEM_REPO_URL` | Fork URL instead of `Oikiy/ML-MEM-Review` |
+| `ML_MEM_REPO_REF` | Branch to clone/fetch (default `main`) |
+| `ML_MEM_COLAB_ROOT` | Clone path (default `/content/ML-MEM-Review`) |
+| `ML_MEM_FORCE_INSTALL=1` | Re-run `pip install -e …` even if SHA unchanged |
+| `ML_MEM_SKIP_PULL=1` | Do not `git reset` an existing clone |
 
 ---
 
