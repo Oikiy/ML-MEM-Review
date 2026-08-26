@@ -2208,14 +2208,7 @@ def _get_inverse_design_plot_config(config: dict[str, Any] | None) -> dict[str, 
 
 def _resolve_inverse_design_output_dir(config: dict[str, Any] | None, inverse_cfg: dict[str, Any]) -> str | None:
     output_dir = inverse_cfg.get("output_dir")
-    if output_dir is None:
-        output_dir = (
-            (config or {}).get("project", {})
-            .get("paths", {})
-            .get("outputs_figures")
-        )
-
-    if output_dir is None:
+    if not output_dir:
         return None
 
     output_dir = str(output_dir)
@@ -2399,15 +2392,21 @@ def plot_ax_results(
             x_col = spec.pop("x_col")
             y_col = spec.pop("y_col")
             z_col = spec.pop("z_col")
-
-            response_map = plot_objective_response_maps(
-                trial_df=plot_trial_df,
-                x_col=x_col,
-                y_col=y_col,
-                z_col=z_col,
-                frontier_df=frontier_df,
-                **spec,
-            )
+            try:
+                response_map = plot_objective_response_maps(
+                    trial_df=plot_trial_df,
+                    x_col=x_col,
+                    y_col=y_col,
+                    z_col=z_col,
+                    frontier_df=frontier_df,
+                    **spec,
+                )
+            except Exception as exc:  # noqa: BLE001
+                warnings.warn(
+                    f"Skipping response map {x_col}/{y_col}/{z_col}: {exc}",
+                    RuntimeWarning,
+                )
+                continue
             output["response_maps"].append(response_map)
 
     return output

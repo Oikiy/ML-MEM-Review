@@ -50,11 +50,12 @@ def test_example_02_classification_model_stage(tmp_path):
     config_path = _prepare_example(tmp_path, "02_classification")
     config = run_pipeline(
         config_path=str(config_path),
-        stages="model",
+        stages="eda,model",
         force_retrain=True,
     )
     figures = Path(config["_project_root"]) / "outputs" / "figures"
     models = Path(config["_project_root"]) / "models"
+    assert (figures / "target_distributions.png").is_file()
     assert (figures / "confusion_label.png").is_file()
     assert any(models.glob("*label*classifier*.pkl"))
 
@@ -72,16 +73,18 @@ def test_colab_notebooks_sync_clone_and_avoid_comma_stage_flag():
     nbs.append(ROOT / "notebooks" / "Complete_notebook" / "Ml-MEM-Tut.ipynb")
     assert len(nbs) >= 6
     for nb_path in nbs:
-        src = "\n".join("".join(c.get("source") or []) for c in json.loads(
-            nb_path.read_text(encoding="utf-8")
-        )["cells"])
+        cells = json.loads(nb_path.read_text(encoding="utf-8"))["cells"]
+        src = "\n".join("".join(c.get("source") or []) for c in cells)
+        code = "\n".join(
+            "".join(c.get("source") or []) for c in cells if c.get("cell_type") == "code"
+        )
         assert '"fetch"' in src, nb_path
         assert "FETCH_HEAD" in src, nb_path
         assert ".colab_install_ok" in src, nb_path
         if nb_path.name == "Colab.ipynb":
-            assert "PYTHONPATH" in src, nb_path
-            assert "--stage eda,model" not in src, nb_path
-            assert 'for stage in ("eda", "model"' in src, nb_path
+            assert "PYTHONPATH" in code, nb_path
+            assert "--stage eda,model" not in code, nb_path
+            assert 'for stage in ("eda", "model"' in code, nb_path
 
 
 @pytest.mark.smoke

@@ -19,6 +19,19 @@ def _get_plotting_cfg(config: Optional[dict[str, Any]] = None) -> dict[str, Any]
     return _resolve_config(config).get("plotting", {})
 
 
+def _target_is_classification(
+    series: pd.Series, config: Optional[dict[str, Any]] = None
+) -> bool:
+    task = "auto"
+    if config is not None:
+        task = config.get("modeling", {}).get("task", "auto")
+    if task == "classification":
+        return True
+    if task == "regression":
+        return False
+    return not pd.api.types.is_numeric_dtype(series)
+
+
 def _build_custom_cmap(plotting_cfg: dict[str, Any]) -> LinearSegmentedColormap:
     cmap_cfg = plotting_cfg.get("custom_colormap", {})
     return LinearSegmentedColormap.from_list(
@@ -42,7 +55,8 @@ def plot_target_distributions(
     config: Optional[dict[str, Any]] = None,
 ) -> Tuple[plt.Figure, np.ndarray]:
     """
-    Plot violin + boxplots with overlaid scatter for a set of regression targets.
+    Plot target columns: violin + box + scatter for numeric values, class-count
+    bars for classification labels.
 
     Parameters
     ----------
@@ -103,68 +117,90 @@ def plot_target_distributions(
         ax = axes[i]
         y_data = y_regression[column].dropna()
 
-        # Violin plot as background
-        parts = ax.violinplot(
-            [y_data],
-            positions=[0],
-            widths=0.5,
-            showmeans=False,
-            showmedians=False,
-            showextrema=False,
-        )
-
-        for pc in parts['bodies']:
-            pc.set_facecolor(violin_colors[i % len(violin_colors)])
-            pc.set_alpha(0.4)
-            pc.set_edgecolor(edge_color)
-            pc.set_linewidth(1.5)
-
-        # Boxplot on top
-        ax.boxplot(
-            [y_data],
-            positions=[0],
-            widths=0.25,
-            patch_artist=True,
-            medianprops=dict(color=median_color, linewidth=3),
-            boxprops=dict(
-                facecolor=colors[i % len(colors)],
+        if _target_is_classification(y_data, config):
+            counts = y_data.astype(str).value_counts()
+            xpos = np.arange(len(counts))
+            ax.bar(
+                xpos,
+                counts.to_numpy(),
+                color=colors[i % len(colors)],
                 edgecolor=edge_color,
                 linewidth=2,
                 alpha=0.8,
-            ),
-            whiskerprops=dict(color=edge_color, linewidth=2),
-            capprops=dict(color=edge_color, linewidth=2),
-            flierprops=dict(
-                marker='D',
-                markerfacecolor=outlier_color,
-                markersize=8,
-                linestyle='none',
-                markeredgecolor=edge_color,
-                markeredgewidth=1,
-                alpha=0.7,
-            ),
-        )
+            )
+            ax.set_xticks(xpos)
+            ax.set_xticklabels(list(counts.index))
+            ax.set_ylabel(
+                "count", fontsize=font_size, fontweight="bold", color="#252525"
+            )
+            ax.set_xlabel(
+                column, fontsize=font_size, fontweight="bold", color="#252525"
+            )
+            ax.tick_params(
+                axis="both", which="major", labelsize=font_size, colors="#252525"
+            )
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=5))
+        else:
+            parts = ax.violinplot(
+                [y_data],
+                positions=[0],
+                widths=0.5,
+                showmeans=False,
+                showmedians=False,
+                showextrema=False,
+            )
 
-        # Scatter of individual points
-        x_data = np.random.normal(0, jitter_std, size=len(y_data))
-        ax.scatter(
-            x_data,
-            y_data,
-            alpha=0.25,
-            s=30,
-            color=scatter_color,
-            edgecolors='none',
-        )
+            for pc in parts["bodies"]:
+                pc.set_facecolor(violin_colors[i % len(violin_colors)])
+                pc.set_alpha(0.4)
+                pc.set_edgecolor(edge_color)
+                pc.set_linewidth(1.5)
 
-        # Axes formatting
-        ax.set_xlim(*xlim)
-        ax.set_ylabel(column, fontsize=font_size, fontweight='bold', color='#252525')
-        ax.set_xlabel('', fontsize=font_size)
-        ax.tick_params(axis='both', which='major', labelsize=font_size, colors='#252525')
-        ax.set_xticks([])
+            ax.boxplot(
+                [y_data],
+                positions=[0],
+                widths=0.25,
+                patch_artist=True,
+                medianprops=dict(color=median_color, linewidth=3),
+                boxprops=dict(
+                    facecolor=colors[i % len(colors)],
+                    edgecolor=edge_color,
+                    linewidth=2,
+                    alpha=0.8,
+                ),
+                whiskerprops=dict(color=edge_color, linewidth=2),
+                capprops=dict(color=edge_color, linewidth=2),
+                flierprops=dict(
+                    marker="D",
+                    markerfacecolor=outlier_color,
+                    markersize=8,
+                    linestyle="none",
+                    markeredgecolor=edge_color,
+                    markeredgewidth=1,
+                    alpha=0.7,
+                ),
+            )
 
-        # Sparse y-ticks
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+            x_data = np.random.normal(0, jitter_std, size=len(y_data))
+            ax.scatter(
+                x_data,
+                y_data,
+                alpha=0.25,
+                s=30,
+                color=scatter_color,
+                edgecolors="none",
+            )
+
+            ax.set_xlim(*xlim)
+            ax.set_ylabel(
+                column, fontsize=font_size, fontweight="bold", color="#252525"
+            )
+            ax.set_xlabel("", fontsize=font_size)
+            ax.tick_params(
+                axis="both", which="major", labelsize=font_size, colors="#252525"
+            )
+            ax.set_xticks([])
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
 
         ax.grid(False)
 

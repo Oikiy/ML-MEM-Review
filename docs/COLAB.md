@@ -116,6 +116,7 @@ Environment overrides (optional, set before the bootstrap cell):
 | `ML_MEM_REPO_REF` | Branch to clone/fetch (default `main`) |
 | `ML_MEM_COLAB_ROOT` | Clone path (default `/content/ML-MEM-Review`) |
 | `ML_MEM_FORCE_INSTALL=1` | Re-run `pip install -e …` even if SHA unchanged |
+| Example 05 / tutorial | Bootstrap extras are `opt` / `all`. After examples 01–04, re-running bootstrap **reinstalls Ax**. If inverse design is configured and Ax is missing, the pipeline **errors** instead of skipping. |
 | `ML_MEM_SKIP_PULL=1` | Do not `git reset` an existing clone |
 
 ---

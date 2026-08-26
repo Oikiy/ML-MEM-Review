@@ -221,6 +221,14 @@ def _optimization_is_configured(config) -> bool:
 
 def run_optimization(config, figures_dir, force_retrain, trial_error=0.01):
     """Bayesian optimization / inverse design (Ax). Requires the ax package."""
+    if not _optimization_is_configured(config):
+        print(
+            "Skipping inverse design: add optimization.objectives and "
+            "optimization.search_space to your config (objectives must name "
+            "columns in data.targets) to enable it."
+        )
+        return
+
     try:
         from ax.api.client import Client  # noqa: F401
         from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
@@ -234,19 +242,10 @@ def run_optimization(config, figures_dir, force_retrain, trial_error=0.01):
             run_ax_optimization,
         )
     except Exception as exc:  # noqa: BLE001
-        print(
-            f"Skipping inverse design: Ax is not available ({exc}). "
+        raise ImportError(
+            "Inverse design is configured but Ax is not available. "
             "Install with: pip install -e '.[opt]'"
-        )
-        return
-
-    if not _optimization_is_configured(config):
-        print(
-            "Skipping inverse design: add optimization.objectives and "
-            "optimization.search_space to your config (objectives must name "
-            "columns in data.targets) to enable it."
-        )
-        return
+        ) from exc
 
     opt_cfg = get_optimization_config(config)
     search_space_parameters = build_ax_search_space(
@@ -257,26 +256,19 @@ def run_optimization(config, figures_dir, force_retrain, trial_error=0.01):
     )
 
     print(f"\n=== Inverse design ({opt_cfg.get('mode')}) ===")
-    try:
-        client, results = run_ax_optimization(
-            search_space_parameters=search_space_parameters,
-            oracle_from_params=oracle_from_params,
-            config=config,
-            sobol_init=opt_cfg.get("sobol_init", 5),
-            n_trials=opt_cfg.get("n_trials", 20),
-            trial_error=trial_error,
-            client_path=client_path,
-            load_client=True,
-            force_rebuild=force_retrain,
-            random_seed=config.get("modeling", {}).get("random_state"),
-            save_every_trials=opt_cfg.get("save_checkpoint_every", 5),
-        )
-    except FileNotFoundError as exc:
-        print(f"Skipping inverse design: {exc}")
-        return
-    except KeyError as exc:
-        print(f"Skipping inverse design: {exc}")
-        return
+    client, results = run_ax_optimization(
+        search_space_parameters=search_space_parameters,
+        oracle_from_params=oracle_from_params,
+        config=config,
+        sobol_init=opt_cfg.get("sobol_init", 5),
+        n_trials=opt_cfg.get("n_trials", 20),
+        trial_error=trial_error,
+        client_path=client_path,
+        load_client=True,
+        force_rebuild=force_retrain,
+        random_seed=config.get("modeling", {}).get("random_state"),
+        save_every_trials=opt_cfg.get("save_checkpoint_every", 5),
+    )
 
     get_optimization_recommendations(
         client=client,
@@ -292,26 +284,33 @@ def run_optimization(config, figures_dir, force_retrain, trial_error=0.01):
     )
     if summary_figure is None and viz.get("figures"):
         summary_figure = viz["figures"].get("summary_figure")
-    if summary_figure is not None:
-        file_io("save", "figure", figures_dir, "inverse_design_summary.png", data=summary_figure)
+    if summary_figure is None:
+        raise RuntimeError(
+            "Inverse design finished but produced no summary figure. "
+            "Check optimization.objectives and optimization.inverse_design in the config."
+        )
+    file_io("save", "figure", figures_dir, "inverse_design_summary.png", data=summary_figure)
 
-    for index, response_map in enumerate(viz.get("response_maps", []), start=1):
-        if response_map.get("surface_figure") is not None:
-            file_io(
-                "save",
-                "figure",
-                figures_dir,
-                f"response_map_{index}_surface.png",
-                data=response_map["surface_figure"],
-            )
-        if response_map.get("contour_figure") is not None:
-            file_io(
-                "save",
-                "figure",
-                figures_dir,
-                f"response_map_{index}_contour.png",
-                data=response_map["contour_figure"],
-            )
+    try:
+        for index, response_map in enumerate(viz.get("response_maps", []), start=1):
+            if response_map.get("surface_figure") is not None:
+                file_io(
+                    "save",
+                    "figure",
+                    figures_dir,
+                    f"response_map_{index}_surface.png",
+                    data=response_map["surface_figure"],
+                )
+            if response_map.get("contour_figure") is not None:
+                file_io(
+                    "save",
+                    "figure",
+                    figures_dir,
+                    f"response_map_{index}_contour.png",
+                    data=response_map["contour_figure"],
+                )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Inverse design summary saved; response-map plots skipped ({exc})")
     print(f"Inverse design completed: {len(results)} trials")
 
 
