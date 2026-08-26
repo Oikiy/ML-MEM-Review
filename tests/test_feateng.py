@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from utl_feateng import feature_engineering, get_custom_synthetic_features
 
@@ -52,3 +53,18 @@ def test_synthetic_features_from_equation(tmp_path):
     df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0], "kpi_1": [0.1, 0.2]})
     synthetic = get_custom_synthetic_features(df, config=config)
     assert list(synthetic["combined"]) == [4.0, 6.0]
+
+
+def test_synthetic_features_reject_unsafe_equation(tmp_path):
+    from utl_config_loader import load_config
+
+    synth_cfg = (
+        "feature_engineering:\n"
+        "  synthetic_feature:\n"
+        "    - name: bad\n"
+        "      equation: \"__import__('os')\"\n"
+    )
+    config = load_config(config_path=make_config(tmp_path, synth_cfg))
+    df = pd.DataFrame({"a": [1.0, 2.0], "kpi_1": [0.1, 0.2]})
+    with pytest.raises(ValueError, match="restricted arithmetic"):
+        get_custom_synthetic_features(df, config=config)

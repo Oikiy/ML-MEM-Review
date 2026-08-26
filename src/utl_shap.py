@@ -95,9 +95,8 @@ def shap_explain_target(
         import shap
     except Exception as exc:
         raise ImportError(
-            "SHAP could not be imported. This is often caused by a broken or incompatible "
-            "PyTorch installation. Reinstall shap/torch in the active environment before "
-            "running SHAP analysis."
+            "SHAP could not be imported. Install with: pip install -e '.[shap]'. "
+            "A broken PyTorch install can also block shap; reinstall shap/torch if needed."
         ) from exc
 
     print(f"\n=== SHAP interpretation for target: {target} ===")

@@ -1,6 +1,8 @@
 import pandas as pd
 import os
 
+from utl_expr import evaluate_arithmetic_frame
+
 
 def check_and_merge(df, merge_configs, verbose=False):
     """
@@ -366,8 +368,7 @@ def get_custom_synthetic_features(df, feature_specs=None, config=None, verbose=F
             )
 
         try:
-            # Use DataFrame.eval so equations can reference columns directly.
-            result = df.eval(equation, engine="python")
+            result = evaluate_arithmetic_frame(df, equation)
         except Exception as exc:
             raise ValueError(
                 f"Failed to evaluate equation for synthetic feature '{feature_name}': {equation}. "

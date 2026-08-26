@@ -26,19 +26,19 @@ Open-in-Colab badge (replace branch if needed):
    - detect Colab
    - clone the repo if you only opened the `.ipynb` from GitHub
    - `cd` to the repo root
-   - `pip install -e .`
-   - enable `%matplotlib inline`
+- `pip install -e ".[all]"`
+    - enable `%matplotlib inline`
 4. Run the remaining cells top to bottom.
 
 If bootstrap already ran and the kernel restarted, run the bootstrap cell again
 (it reuses an existing clone under `/content/ML-MEM-Review`).
 
-**Ax / inverse design:** Sections 1–5 work without Ax. Section 6 needs a
-successful `pip install -e .` (pulls `ax-platform` + `botorch` + `torch`).
-If Ax import fails, re-run bootstrap or:
+**Ax / inverse design:** Sections 1–5 work with the core install. Section 6 needs
+`pip install -e ".[all]"` (or at least `".[opt]"`) for `ax-platform` + `botorch`
++ `torch`. If Ax import fails, re-run bootstrap or:
 
 ```python
-!pip install -e .
+!pip install -e ".[all]"
 ```
 
 ---
@@ -59,7 +59,7 @@ Or from a shell after clone:
 
 ```bash
 cd /content/ML-MEM-Review   # after bootstrap/clone
-pip install -e .
+pip install -e ".[all]"     # or "." for examples 01–04 only
 
 python -m run_pipeline --config examples/01_minimal_regression/config.yaml --force-retrain
 # … same pattern for 02–05
@@ -78,7 +78,7 @@ Artifacts land under each example folder:
 REPO_URL = "https://github.com/Oikiy/ML-MEM-Review.git"
 !git clone --depth 1 $REPO_URL
 %cd ML-MEM-Review
-!pip install -e .
+!pip install -e ".[all]"
 ```
 
 Then either open `notebooks/Complete_notebook/Ml-MEM-Tut.ipynb` from the
@@ -95,8 +95,8 @@ Fork users: set `REPO_URL` to your fork before cloning.
 | `Could not find config.yaml` | Bootstrap did not `cd` to repo root; re-run Colab cell or `%cd /content/ML-MEM-Review` |
 | `ModuleNotFoundError: utl_*` | `pip install -e .` from repo root, or ensure `src/` is on `sys.path` (notebook setup does this) |
 | `requires-python >=3.11` / install fails | Runtime → Change runtime type → pick 3.11+ |
-| Ax import skipped | Reinstall: `!pip install -e .` ; restart runtime; re-run bootstrap |
-| Install times out | Re-run `pip install -e .`; avoid interrupting torch download |
+| Ax import skipped | Reinstall: `!pip install -e ".[opt]"` ; restart runtime; re-run bootstrap |
+| Install times out | Re-run `pip install -e ".[all]"`; avoid interrupting torch download |
 | Free tier disconnect mid-BO | Lower `optimization.n_trials` in config; re-run with `--force-retrain` |
 | Example 04/05 missing | Pull latest `main` (those folders must be on the remote) |
 | Figures not shown | Ensure bootstrap ran (`%matplotlib inline`) |

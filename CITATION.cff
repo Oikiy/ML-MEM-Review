@@ -12,7 +12,7 @@ keywords:
   - membranes
   - bayesian optimization
 license: MIT
-version: "0.6.0"
+version: "1.0.3"
 date-released: "2026-08-10"
 preferred-citation:
   type: article

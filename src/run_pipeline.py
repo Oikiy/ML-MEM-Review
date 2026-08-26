@@ -52,13 +52,9 @@ from utl_config_loader import (  # noqa: E402
 from utl_eda import compute_and_plot_pearson_heatmap, plot_target_distributions  # noqa: E402
 from utl_feateng import feature_engineering  # noqa: E402
 from utl_fileIO import file_io  # noqa: E402
-from utl_modelling import evaluate_and_plot_results, train_model  # noqa: E402
+from utl_modelling import _safe_target, evaluate_and_plot_results, train_model  # noqa: E402
 
 STAGES = ["data", "eda", "model", "shap", "optimize"]
-
-
-def _safe_target(target: str) -> str:
-    return "".join(ch if ch.isalnum() else "_" for ch in str(target)).strip("_")
 
 
 def load_data(config):
@@ -148,7 +144,12 @@ def run_modeling(config, df_enriched, targets, figures_dir, force_retrain):
 
 def run_shap(config, df_enriched, targets, figures_dir):
     """SHAP interpretation for each trained model."""
-    import utl_shap
+    try:
+        import shap  # noqa: F401
+        import utl_shap
+    except Exception as exc:  # noqa: BLE001
+        print(f"Skipping SHAP: not available ({exc}). Install with: pip install -e '.[shap]'")
+        return
 
     for target in targets:
         shap_values, feature_names, summary_fig, bar_fig = utl_shap.shap_explain_target(
@@ -211,7 +212,10 @@ def run_optimization(config, figures_dir, force_retrain, trial_error=0.01):
             run_ax_optimization,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"Skipping inverse design: Ax is not available ({exc}).")
+        print(
+            f"Skipping inverse design: Ax is not available ({exc}). "
+            "Install with: pip install -e '.[opt]'"
+        )
         return
 
     if not _optimization_is_configured(config):

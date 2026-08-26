@@ -57,20 +57,24 @@ def test_resolve_targets_from_data(tmp_path):
     assert resolve_targets(config) == ["kpi_1"]
 
 
-def test_resolve_targets_legacy_fallback(tmp_path):
+def test_legacy_project_definition_is_ignored(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         'project_definition:\n  target: ["old_kpi"]\n', encoding="utf-8"
     )
-    config = load_config(config_path=str(config_path))
-    assert resolve_targets(config) == ["old_kpi"]
+    with pytest.raises(ValueError, match="No dataset configured"):
+        load_config(config_path=str(config_path))
 
 
-def test_resolve_targets_missing_raises(tmp_path):
+def test_load_config_missing_targets_raises(tmp_path):
     no_targets = "data:\n  dataset: x.csv\n"
-    config = load_config(config_path=write_minimal(tmp_path, no_targets))
-    with pytest.raises(ValueError):
-        resolve_targets(config)
+    with pytest.raises(ValueError, match="No targets configured"):
+        load_config(config_path=write_minimal(tmp_path, no_targets))
+
+
+def test_resolve_targets_missing_raises():
+    with pytest.raises(ValueError, match="No targets configured"):
+        resolve_targets({"data": {"dataset": "x.csv", "targets": []}})
 
 
 def test_resolve_features_auto_skips_target_constant_and_high_missing(tmp_path):
@@ -100,6 +104,47 @@ def test_resolve_features_manual_returns_present_columns(tmp_path):
     config = load_config(config_path=write_minimal(tmp_path, manual))
     df = pd.DataFrame({"kpi_1": [0.1, 0.2], "good_1": [1.0, 2.0]})
     assert resolve_features_to_model(config, df) == ["good_1", "kpi_1"]
+
+
+def test_resolve_features_manual_empty_include_raises(tmp_path):
+    manual = "features:\n  mode: manual\n  include: []\n"
+    config = load_config(config_path=write_minimal(tmp_path, manual))
+    df = pd.DataFrame({"kpi_1": [0.1, 0.2], "good_1": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="features.include is empty"):
+        resolve_features_to_model(config, df)
+
+
+def test_resolve_features_ignores_legacy_features_to_model(tmp_path):
+    extra = (
+        "features:\n"
+        "  mode: manual\n"
+        "  include: []\n"
+        'features_to_model: ["good_1"]\n'
+    )
+    config = load_config(config_path=write_minimal(tmp_path, extra))
+    df = pd.DataFrame({"kpi_1": [0.1, 0.2], "good_1": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="features.include is empty"):
+        resolve_features_to_model(config, df)
+
+
+def test_missing_value_threshold_comes_from_features(tmp_path):
+    extra = (
+        "features:\n"
+        "  mode: auto\n"
+        "  missing_value_threshold: 0.5\n"
+        "feature_engineering:\n"
+        "  missing_value_threshold: 0.01\n"
+    )
+    config = load_config(config_path=write_minimal(tmp_path, extra))
+    df = pd.DataFrame(
+        {
+            "kpi_1": [0.1, 0.2, 0.3, 0.4],
+            "half_missing": [1.0, 2.0, None, None],
+        }
+    )
+    features = resolve_features_to_model(config, df)
+    assert "half_missing" in features
+    assert config["features"]["missing_value_threshold"] == 0.5
 
 
 def test_path_keys_relative_to_project_root(tmp_path):
@@ -143,3 +188,17 @@ def test_check_dataset_compatibility(tmp_path):
 def test_validate_config_required_sections():
     with pytest.raises(ValueError, match="Missing required configuration section"):
         validate_config({"data": {}, "modeling": {}, "plotting": {}})
+
+
+def test_validate_config_requires_dataset_and_targets():
+    base = {
+        "data": {"dataset": "", "targets": []},
+        "modeling": {},
+        "plotting": {},
+        "feature_engineering": {},
+    }
+    with pytest.raises(ValueError, match="No dataset configured"):
+        validate_config(base)
+    base["data"]["dataset"] = "x.csv"
+    with pytest.raises(ValueError, match="No targets configured"):
+        validate_config(base)

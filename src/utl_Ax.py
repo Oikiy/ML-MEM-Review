@@ -21,6 +21,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from utl_config_loader import get_model_dir, get_optimization_config, load_config
+from utl_expr import evaluate_arithmetic
 from utl_feateng import feature_engineering
 from utl_fileIO import file_io
 from utl_modelling import _resolve_model_path
@@ -249,20 +250,13 @@ def _apply_ax_computed_parameters(
             )
 
         try:
-            evaluated = pd.DataFrame([result]).eval(equation, engine="python")
+            value = float(evaluate_arithmetic(equation, result))
         except Exception as exc:
             raise ValueError(
                 "Failed to evaluate optimization.computed_parameters equation for "
                 f"'{name}': {equation}. Available variables: {sorted(result.keys())}. "
                 f"Original error: {exc}"
             ) from exc
-
-        if len(evaluated) != 1:
-            raise ValueError(
-                f"Computed parameter equation for '{name}' did not evaluate to one value: {equation}"
-            )
-
-        value = float(evaluated.iloc[0])
 
         min_value = item.get("min_value")
         if min_value is not None:
@@ -315,7 +309,7 @@ def _validate_oracle_pre_feature_engineering_inputs(
                     f"Synthetic feature '{feature_name}' must define a non-empty string equation."
                 )
             try:
-                pd.DataFrame([df_raw.iloc[0].to_dict()]).eval(equation, engine="python")
+                evaluate_arithmetic(equation, df_raw.iloc[0].to_dict())
             except Exception as exc:
                 raise ValueError(
                     "Raw oracle dataframe cannot satisfy synthetic feature equation "
@@ -548,20 +542,13 @@ def _evaluate_scalarized_objective_from_config(
         original_metric_values=original_metric_values,
     )
     try:
-        result = pd.DataFrame([context]).eval(equation, engine="python")
+        return float(evaluate_arithmetic(equation, context))
     except Exception as exc:
         raise ValueError(
             "Failed to evaluate optimization.scalarized_objective.equation: "
             f"{equation}. Available variables: {sorted(context.keys())}. "
             f"Original error: {exc}"
         ) from exc
-
-    if len(result) != 1:
-        raise ValueError(
-            "Scalarized objective equation must evaluate to exactly one scalar value. "
-            f"Got result length {len(result)} for equation: {equation}"
-        )
-    return float(result.iloc[0])
 
 
 def _normalize_optimization_mode(optimization_mode: str) -> str:

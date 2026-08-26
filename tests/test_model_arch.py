@@ -4,18 +4,20 @@ import pytest
 from sklearn.ensemble import (
     ExtraTreesClassifier,
     ExtraTreesRegressor,
-    RandomForestClassifier,
     RandomForestRegressor,
 )
-from sklearn.linear_model import LogisticRegression, Ridge, RidgeClassifier
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.preprocessing import StandardScaler
 
 from utl_model_arch import (
+    build_pipeline_from_modeling_config,
     get_default_param_dist,
     is_tree_model,
     list_available_models,
     make_estimator,
     normalize_model_key,
     resolve_param_dist,
+    split_feature_types,
 )
 
 
@@ -126,3 +128,77 @@ modeling:
     assert isinstance(pipe.named_steps["model"], RandomForestRegressor)
     model_files = list((tmp_path / "models").glob("*.pkl"))
     assert any("randomforest" in p.name for p in model_files)
+    assert list(pipe.named_steps) == ["preprocess", "selector", "model"]
+
+
+def test_pipeline_default_step_names():
+    pipe = build_pipeline_from_modeling_config(
+        {"model_selection": "extratrees", "n_estimators": 10},
+        task="regression",
+        categorical_cols=["cat"],
+        numerical_cols=["num"],
+    )
+    assert list(pipe.named_steps) == ["preprocess", "selector", "model"]
+    transformers = {name: trans for name, trans, _ in pipe.named_steps["preprocess"].transformers}
+    assert list(transformers["num"].named_steps) == ["imputer", "scaler"]
+    assert transformers["num"].named_steps["scaler"] == "passthrough"
+
+
+def test_numerical_scaler_standard_inserts_standard_scaler():
+    pipe = build_pipeline_from_modeling_config(
+        {
+            "model_selection": "ridge",
+            "pipeline": {"numerical_scaler": "standard"},
+        },
+        task="regression",
+        numerical_cols=["x"],
+        categorical_cols=[],
+    )
+    transformers = {name: trans for name, trans, _ in pipe.named_steps["preprocess"].transformers}
+    assert isinstance(transformers["num"].named_steps["scaler"], StandardScaler)
+
+
+def test_split_feature_types_treats_bool_as_categorical():
+    import pandas as pd
+
+    df = pd.DataFrame({"num": [1.0, 2.0], "flag": [True, False], "name": ["a", "b"]})
+    _, cat_cols, num_cols = split_feature_types(df)
+    assert cat_cols == ["flag", "name"]
+    assert num_cols == ["num"]
+
+
+def test_train_model_honors_numerical_scaler(tmp_path):
+    import pandas as pd
+    from utl_modelling import train_model
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        """
+project:
+  name: scaler_test
+  paths:
+    models: models
+data:
+  dataset: x.csv
+  targets: [y]
+features:
+  mode: auto
+modeling:
+  model_selection: ridge
+  task: regression
+  use_hyperparam_tuning: false
+  random_state: 0
+  pipeline:
+    numerical_scaler: standard
+""",
+        encoding="utf-8",
+    )
+    df = pd.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        }
+    )
+    pipe, *_ = train_model(df, target="y", config_path=str(cfg), force_retrain=True)
+    scaler = pipe.named_steps["preprocess"].named_transformers_["num"].named_steps["scaler"]
+    assert isinstance(scaler, StandardScaler)

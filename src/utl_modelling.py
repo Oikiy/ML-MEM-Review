@@ -6,8 +6,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -20,8 +18,6 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.model_selection import GridSearchCV, KFold, RandomizedSearchCV, StratifiedKFold, train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
 from sklearn.utils.multiclass import type_of_target
 
 from utl_config_loader import (
@@ -29,7 +25,16 @@ from utl_config_loader import (
     load_config,
     resolve_features_to_model,
 )
-from utl_model_arch import make_estimator, normalize_model_key, resolve_param_dist
+from utl_model_arch import (
+    build_pipeline_from_modeling_config,
+    normalize_model_key,
+    resolve_param_dist,
+    split_feature_types,
+)
+
+
+def _safe_target(target: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in str(target)).strip("_")
 
 try:
     from imblearn.over_sampling import BorderlineSMOTE
@@ -46,13 +51,6 @@ except Exception:  # pragma: no cover - optional dependency
 
 RANDOM_STATE = 42
 FONT_SIZE = 20
-
-
-def _make_one_hot_encoder():
-    try:
-        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-    except TypeError:
-        return OneHotEncoder(handle_unknown="ignore", sparse=False)
 
 
 def _build_feature_table(
@@ -118,17 +116,7 @@ def _drop_low_information_columns(
 
 
 def _split_feature_types(df_frame: pd.DataFrame, feature_list: list):
-    model_features = [feature for feature in feature_list if feature in df_frame.columns]
-    categorical_cols = []
-    numerical_cols = []
-    for feature in model_features:
-        series = df_frame[feature]
-        # Non-numeric (object, string[python], category, bool, etc.) -> categorical.
-        if pd.api.types.is_bool_dtype(series) or not pd.api.types.is_numeric_dtype(series):
-            categorical_cols.append(feature)
-        else:
-            numerical_cols.append(feature)
-    return model_features, categorical_cols, numerical_cols
+    return split_feature_types(df_frame, feature_list)
 
 
 def _final_estimator(estimator):
@@ -174,21 +162,6 @@ def _default_param_dist(task: str, model_selection: str = "extratrees"):
     return resolve_param_dist(model_selection, task)
 
 
-def _default_model(
-    task: str,
-    random_state: int,
-    n_estimators: int,
-    model_selection: str = "extratrees",
-):
-    """Instantiate the configured model architecture for the given task."""
-    return make_estimator(
-        model_selection,
-        task=task,
-        random_state=random_state,
-        n_estimators=n_estimators,
-    )
-
-
 def _task_to_filename_label(task: str) -> str:
     task_lower = str(task).lower()
     if task_lower == "regression":
@@ -206,69 +179,29 @@ def _resolve_model_path(
     model: str,
 ) -> str:
     task_label = _task_to_filename_label(task)
-    filename = model_filename_pattern.format(target=target, task=task_label, model=model)
+    filename = model_filename_pattern.format(
+        target=_safe_target(target), task=task_label, model=model
+    )
     if "{task}" not in model_filename_pattern:
         base_name, extension = os.path.splitext(filename)
         filename = f"{base_name}_{task_label}{extension}"
     return os.path.join(model_dir, filename)
 
 
-def _build_default_pipeline(
-    X_train: pd.DataFrame,
-    task: str,
-    random_state: int,
-    n_estimators: int,
-    use_smote: bool = False,
-    estimator=None,
-    model_selection: str = "extratrees",
-):
-    _, categorical_cols, numerical_cols = _split_feature_types(X_train, list(X_train.columns))
-
-    transformers = []
-    if numerical_cols:
-        transformers.append(
-            (
-                "num",
-                Pipeline(steps=[("imputer", SimpleImputer(strategy="median"))]),
-                numerical_cols,
-            )
+def _maybe_apply_smote(pipe, task: str, use_smote: bool, random_state: int):
+    if task != "classification" or not use_smote:
+        return pipe
+    if ImbPipeline is None or BorderlineSMOTE is None:
+        raise ImportError(
+            "imblearn is required when use_smote=True. Install with: pip install -e '.[imblearn]'"
         )
-    if categorical_cols:
-        transformers.append(
-            (
-                "cat",
-                Pipeline(
-                    steps=[
-                        ("imputer", SimpleImputer(strategy="most_frequent")),
-                        ("onehot", _make_one_hot_encoder()),
-                    ]
-                ),
-                categorical_cols,
-            )
-        )
-
-    if not transformers:
-        raise ValueError("No usable features remain after preprocessing.")
-
-    preprocess = ColumnTransformer(transformers=transformers, remainder="drop")
-    model = (
-        estimator
-        if estimator is not None
-        else _default_model(task, random_state, n_estimators, model_selection=model_selection)
-    )
-
-    if task == "classification" and use_smote:
-        if ImbPipeline is None or BorderlineSMOTE is None:
-            raise ImportError("imblearn is required when use_smote=True for classification training.")
-        return ImbPipeline(
-            steps=[
-                ("preprocess", preprocess),
-                ("smote", BorderlineSMOTE(random_state=random_state)),
-                ("model", model),
-            ]
-        )
-
-    return Pipeline(steps=[("preprocess", preprocess), ("model", model)])
+    named = getattr(pipe, "named_steps", {})
+    if "model" not in named:
+        raise ValueError("SMOTE wrapping requires a pipeline with a 'model' step.")
+    steps = [(name, step) for name, step in pipe.steps if name != "model"]
+    steps.append(("smote", BorderlineSMOTE(random_state=random_state)))
+    steps.append(("model", named["model"]))
+    return ImbPipeline(steps=steps)
 
 
 def regression_metrics(y_true, y_pred, label="", verbose: bool = True):
@@ -360,7 +293,7 @@ def fit_pipeline(
         if BayesSearchCV is None:
             raise ImportError(
                 "BayesSearchCV requested but scikit-optimize is not available. "
-                "Install scikit-optimize (skopt) or choose another search_cv backend."
+                "Install with: pip install -e '.[opt]' or choose another search_cv backend."
             )
         print("Search backend: BayesSearchCV")
         search = BayesSearchCV(
@@ -415,7 +348,7 @@ def train_model(
     """Train a regression or classification model using a single entry point."""
     config = load_config(config_path=config_path)
     modeling_cfg = config.get("modeling", {})
-    feature_engineering_cfg = config.get("feature_engineering", {})
+    features_cfg = config.get("features", {})
 
     # Feature columns come from the config resolver (auto mode or explicit list).
     features_to_model = resolve_features_to_model(config, df)
@@ -440,7 +373,6 @@ def train_model(
 
     train_test_ratio = modeling_cfg.get("train_test_ratio", 0.2)
     random_state = modeling_cfg.get("random_state", RANDOM_STATE)
-    n_estimators = modeling_cfg.get("n_estimators", 300)
     use_kfold = modeling_cfg.get("use_kfold", False)
     n_splits = int(modeling_cfg.get("cv_folds", modeling_cfg.get("n_splits", 5)))
     use_hyperparam_tuning = modeling_cfg.get("use_hyperparam_tuning", False)
@@ -457,7 +389,7 @@ def train_model(
             f"({resolved_task}); training with defaults."
         )
         use_hyperparam_tuning = False
-    missing_value_threshold = feature_engineering_cfg.get("missing_value_threshold", 0.3)
+    missing_value_threshold = features_cfg.get("missing_value_threshold", 0.3)
 
     X, y = _build_feature_table(
         df,
@@ -526,25 +458,18 @@ def train_model(
         print("Test samples:", X_test.shape[0])
 
         pipe = pipeline
+        estimator = None
+        if pipe is not None and not hasattr(pipe, "named_steps") and not hasattr(pipe, "steps"):
+            estimator = pipe
+            pipe = None
         if pipe is None:
-            pipe = _build_default_pipeline(
-                X_train=X_train,
+            pipe = build_pipeline_from_modeling_config(
+                modeling_cfg,
                 task=resolved_task,
-                random_state=random_state,
-                n_estimators=n_estimators,
-                use_smote=use_smote,
-                model_selection=selected_model_name,
+                X=X_train,
+                estimator=estimator,
             )
-        elif not hasattr(pipe, "named_steps") and not hasattr(pipe, "steps"):
-            pipe = _build_default_pipeline(
-                X_train=X_train,
-                task=resolved_task,
-                random_state=random_state,
-                n_estimators=n_estimators,
-                use_smote=use_smote,
-                estimator=pipe,
-                model_selection=selected_model_name,
-            )
+            pipe = _maybe_apply_smote(pipe, resolved_task, use_smote, random_state)
 
         print(
             "Pipeline received:",

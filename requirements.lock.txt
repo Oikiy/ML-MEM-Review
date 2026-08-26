@@ -1,0 +1,29 @@
+# Direct dependency pins for paper-style installs.
+# Regenerated 2026-08-24. Core is enough for EDA + training.
+#
+#     pip install -r requirements.lock.txt
+#     pip install -e .
+#     pip install -e ".[all]"    # optional: Ax, SHAP, SMOTE, notebook
+#
+# Full transitive freeze (platform-specific, after a successful install):
+#     python -m pip freeze > requirements.freeze.txt
+
+# --- core ---
+numpy==2.3.5
+pandas==2.3.3
+scipy==1.16.3
+scikit-learn==1.7.2
+matplotlib==3.10.6
+seaborn==0.13.2
+joblib==1.5.2
+pyyaml==6.0.3
+openpyxl==3.1.5
+
+# --- extras (pip install -e ".[all]") ---
+# shap==0.45.0
+# ax-platform==0.4.0
+# botorch==0.11.0
+# scikit-optimize==0.10.0
+# plotly==6.3.0
+# imbalanced-learn==0.14.0
+# notebook==7.4.5

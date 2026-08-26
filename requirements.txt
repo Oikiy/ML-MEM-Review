@@ -3,7 +3,10 @@
 #
 #     pip install -e .
 #
-# For a fully pinned, reproducible environment, generate a lockfile with uv:
+# Paper-style pinned core deps:
+#     pip install -r requirements.lock.txt && pip install -e .
+# Optional extras: pip install -e ".[opt]" | ".[shap]" | ".[all]"
 #
-#     uv pip install -e . && uv pip freeze > requirements.lock.txt
+# Full transitive lock (platform-specific):
+#     pip install -e ".[dev]" && pip freeze > requirements.freeze.txt
 -e .

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ml-mem-review"
-version = "0.6.0"
+version = "1.0.3"
 description = "ML-inverse design workflow for membrane development (ML-MEM)."
 readme = "README.md"
 license = { text = "MIT" }
@@ -19,16 +19,33 @@ dependencies = [
     "joblib>=1.3",
     "pyyaml>=6.0",
     "openpyxl>=3.1",
-    "shap>=0.45",
-    "ax-platform>=0.4",
-    "botorch>=0.11",
-    "imbalanced-learn>=0.12",
-    "scikit-optimize>=0.10",
-    "plotly>=5.20",
-    "notebook>=7",
 ]
 
 [project.optional-dependencies]
+opt = [
+    "ax-platform>=0.4",
+    "botorch>=0.11",
+    "scikit-optimize>=0.10",
+    "plotly>=5.20",
+]
+shap = [
+    "shap>=0.45",
+]
+imblearn = [
+    "imbalanced-learn>=0.12",
+]
+notebook = [
+    "notebook>=7",
+]
+all = [
+    "ax-platform>=0.4",
+    "botorch>=0.11",
+    "scikit-optimize>=0.10",
+    "plotly>=5.20",
+    "shap>=0.45",
+    "imbalanced-learn>=0.12",
+    "notebook>=7",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
@@ -42,6 +59,7 @@ py-modules = [
     "utl_Ax",
     "utl_config_loader",
     "utl_eda",
+    "utl_expr",
     "utl_feateng",
     "utl_fileIO",
     "utl_model_arch",
@@ -54,6 +72,9 @@ ml-mem-review = "run_pipeline:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "smoke: end-to-end example pipeline runs",
+]
 
 [tool.ruff]
 line-length = 100

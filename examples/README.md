@@ -13,7 +13,8 @@ pass its config path.
 ## Prerequisites
 
 ```bash
-pip install -e .
+pip install -e .            # core (examples 01–04)
+pip install -e ".[opt]"     # example 05 inverse design
 # from the repository root
 ```
 

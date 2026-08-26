@@ -90,7 +90,7 @@ python -m run_pipeline --config examples/05_inverse_design_controls/config.yaml 
 
 This trains one model per target, then runs Ax. If Ax is missing, training still
 succeeds and inverse design is skipped with a clear message
-(`pip install -e .` installs `ax-platform`).
+(`pip install -e ".[opt]"` installs `ax-platform`).
 
 Re-run inverse design only after models exist:
 

@@ -1,12 +1,13 @@
-import numpy as np
 import pandas as pd
 import pytest
 
+from utl_model_arch import build_pipeline_from_modeling_config
 from utl_modelling import (
-    _build_default_pipeline,
     _drop_low_information_columns,
     _resolve_model_path,
+    _safe_target,
     _task_to_filename_label,
+    train_model,
 )
 
 
@@ -38,6 +39,63 @@ def test_resolve_model_path_appends_task_label():
     assert path == r"C:\models\kpi_1_extratrees_regressor.pkl"
 
 
+def test_resolve_model_path_sanitizes_special_characters():
+    target = "Pure_Water_Permeability_{Lm^{-2}^h{-1}bar^{-1}}"
+    safe = _safe_target(target)
+    assert "{" not in safe
+    assert "}" not in safe
+    path = _resolve_model_path(
+        model_dir=r"C:\models",
+        model_filename_pattern="{target}_{model}_{task}.pkl",
+        target=target,
+        task="regression",
+        model="extratrees",
+    )
+    assert path == rf"C:\models\{safe}_extratrees_regressor.pkl"
+
+
+def test_train_model_reads_missing_threshold_from_features(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        """
+project:
+  name: threshold_test
+  paths:
+    models: models
+data:
+  dataset: x.csv
+  targets: [y]
+features:
+  mode: auto
+  missing_value_threshold: 0.55
+feature_engineering:
+  missing_value_threshold: 0.01
+modeling:
+  model_selection: extratrees
+  task: regression
+  use_hyperparam_tuning: false
+  n_estimators: 10
+  random_state: 0
+""",
+        encoding="utf-8",
+    )
+    n = 20
+    half_missing = [None if i < 8 else float(i) for i in range(n)]
+    df = pd.DataFrame(
+        {
+            "kept": [float(i) for i in range(n)],
+            "half_missing": half_missing,
+            "y": [float(i) for i in range(n)],
+        }
+    )
+    pipe, X_train, X_test, _, _ = train_model(
+        df, target="y", config_path=str(cfg), force_retrain=True
+    )
+    assert "half_missing" in X_train.columns
+    assert "half_missing" in X_test.columns
+    assert pipe is not None
+
+
 def test_drop_low_information_columns_uses_train_only():
     X_train = pd.DataFrame(
         {
@@ -59,14 +117,13 @@ def test_drop_low_information_columns_uses_train_only():
     assert list(X_test_out.columns) == ["good"]
 
 
-def test_build_default_pipeline_raises_on_no_features():
-    X_train = pd.DataFrame()
+def test_build_pipeline_raises_on_no_features():
     with pytest.raises(ValueError, match="No usable features"):
-        _build_default_pipeline(
-            X_train=X_train,
+        build_pipeline_from_modeling_config(
+            {"model_selection": "extratrees"},
             task="regression",
-            random_state=42,
-            n_estimators=50,
+            categorical_cols=[],
+            numerical_cols=[],
         )
 
 

@@ -17,7 +17,10 @@ is discrete.
 ## Quickstart (5 minutes)
 
 ```bash
-pip install -e .            # installs the package + core ML stack
+pip install -e .            # core ML stack (train / EDA)
+# pip install -e ".[opt]"   # Ax inverse design
+# pip install -e ".[shap]"  # SHAP figures
+# pip install -e ".[all]"   # opt + shap + imblearn + notebook
 
 # New project? Copy the minimal template and edit two values:
 cp config.minimal.yaml my_project/config.yaml
@@ -38,9 +41,10 @@ Run the whole workflow:
 python -m run_pipeline --config my_project/config.yaml
 ```
 
-That prints a DATASET CHECK report, then trains a model per target, generates
-EDA / parity / SHAP figures into `outputs/figures/`, and (if an optimization
-block is configured) runs the inverse-design search. No code edits needed.
+That prints a DATASET CHECK report, then trains a model per target and writes
+EDA / parity (or confusion) figures into `outputs/figures/`. SHAP and Ax
+inverse design run when those extras are installed and configured; otherwise
+they are skipped with an install hint. No code edits needed.
 
 ## Reusing on a completely different dataset
 
@@ -92,7 +96,7 @@ cell by cell for teaching.
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Oikiy/ML-MEM-Review/blob/main/notebooks/Complete_notebook/Ml-MEM-Tut.ipynb)
 
 Full clone + install + examples: see **[`docs/COLAB.md`](docs/COLAB.md)**.  
-The tutorial notebook includes a **Colab bootstrap** cell (clone repo, `pip install -e .`, inline plots).
+The tutorial notebook includes a **Colab bootstrap** cell (clone repo, `pip install -e ".[all]"`, inline plots).
 
 ## Examples gallery (short recipes)
 
@@ -128,9 +132,20 @@ is checkpointed to `models/ax_client.pkl`. All artifacts are git-ignored.
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-python -m pytest            # unit tests: config, features, modeling, Ax helpers
+pip install -e ".[dev]"     # pytest + ruff; enough for unit tests and smokes
+pip install -e ".[all]"     # tutorial / Colab / inverse design + SHAP
+python -m pytest
 ```
+
+| Extra | Provides |
+|-------|----------|
+| `opt` | Ax, BoTorch, scikit-optimize, Plotly |
+| `shap` | SHAP figures |
+| `imblearn` | BorderlineSMOTE (`modeling.use_smote`) |
+| `notebook` | Jupyter notebook |
+| `all` | all of the above |
+
+CI (GitHub Actions) runs `ruff check` and `pytest` on Python 3.11. For a pinned paper install see `requirements.lock.txt`.
 
 ## License & citation
 

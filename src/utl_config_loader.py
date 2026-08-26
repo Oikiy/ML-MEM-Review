@@ -182,7 +182,8 @@ def load_config(config_path: Optional[str] = None, project_root: Optional[str] =
     config = _deep_merge(DEFAULTS, config)
 
     _coerce_numeric_threshold_values(config)
-    
+    validate_config(config)
+
     # Store project root and config path in config for reference
     config["_project_root"] = project_root
     config["_config_path"] = config_path
@@ -416,34 +417,9 @@ def get_modeling_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config.get("modeling", {})
 
 
-def get_project_definition_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract project definition configuration.
-
-    Parameters
-    ----------
-    config : dict
-        Configuration dictionary from load_config().
-
-    Returns
-    -------
-    dict
-        Project definition configuration subset.
-    """
-    return config.get("project_definition", {})
-
-
-def get_project_definition_target(config: Dict[str, Any]) -> list[str]:
-    """Backward-compatible alias for :func:`resolve_targets`."""
-    return resolve_targets(config)
-
-
 def resolve_targets(config: Dict[str, Any]) -> list[str]:
     """
-    Return the configured target (output / KPI) columns.
-
-    New config format: ``data.targets``. Legacy fallbacks
-    (``project_definition.target``) are still honoured.
+    Return the configured target (output / KPI) columns from ``data.targets``.
 
     Parameters
     ----------
@@ -462,24 +438,11 @@ def resolve_targets(config: Dict[str, Any]) -> list[str]:
     """
     targets = config.get("data", {}).get("targets", [])
     if not targets:
-        targets = config.get("project_definition", {}).get("target", [])
-    if not targets:
         raise ValueError(
             "No targets configured. Add your output column name(s) to config.yaml "
             "under 'data.targets' (e.g.  targets: [\"your_kpi\"])."
         )
     return list(targets)
-
-
-def get_project_definition_features(config: Dict[str, Any]) -> list[str]:
-    """Backward-compatible alias for the manually configured feature list."""
-    features_cfg = config.get("features", {})
-    include = features_cfg.get("include", [])
-    if not include:
-        include = config.get("features_to_model", [])
-    if not include:
-        include = config.get("project_definition", {}).get("features", [])
-    return list(include)
 
 
 def resolve_features_to_model(config: Dict[str, Any], df=None) -> list[str]:
@@ -490,8 +453,7 @@ def resolve_features_to_model(config: Dict[str, Any], df=None) -> list[str]:
     configured exclusions. Constant, all-missing, or mostly-missing columns
     are skipped. Works with any dataset without editing config.yaml.
 
-    mode = "manual":          exactly the columns in ``features.include``
-    (with legacy fallbacks to ``features_to_model`` / ``project_definition.features``).
+    mode = "manual":          exactly the columns in ``features.include``.
 
     Parameters
     ----------
@@ -510,11 +472,12 @@ def resolve_features_to_model(config: Dict[str, Any], df=None) -> list[str]:
     targets = set(str(t) for t in resolve_targets(config))
 
     if mode != "auto":
-        include = features_cfg.get("include", [])
+        include = features_cfg.get("include", []) or []
         if not include:
-            include = config.get("features_to_model", [])
-        if not include:
-            include = config.get("project_definition", {}).get("features", [])
+            raise ValueError(
+                "features.mode is 'manual' but features.include is empty. "
+                "List the input columns under features.include, or set features.mode to 'auto'."
+            )
         return [c for c in include if df is None or c in df.columns]
 
     if df is None:
@@ -605,7 +568,7 @@ def print_dataset_report(config: Dict[str, Any], df) -> None:
 
 def validate_config(config: Dict[str, Any]) -> None:
     """
-    Validate that all required config sections are present.
+    Validate required config sections and data fields.
 
     Parameters
     ----------
@@ -615,9 +578,23 @@ def validate_config(config: Dict[str, Any]) -> None:
     Raises
     ------
     ValueError
-        If required sections are missing.
+        If required sections or data fields are missing.
     """
     required_sections = ["data", "modeling", "plotting", "feature_engineering"]
     for section in required_sections:
         if section not in config:
             raise ValueError(f"Missing required configuration section: {section}")
+
+    data = config.get("data") or {}
+    dataset = data.get("dataset")
+    if not dataset or not str(dataset).strip():
+        raise ValueError(
+            "No dataset configured. Set data.dataset in your config file "
+            "(filename inside data/raw/)."
+        )
+    targets = data.get("targets") or []
+    if not targets:
+        raise ValueError(
+            "No targets configured. Add your output column name(s) to config.yaml "
+            "under 'data.targets' (e.g.  targets: [\"your_kpi\"])."
+        )

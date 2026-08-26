@@ -13,8 +13,9 @@ require hand-writing ``param_dist``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
+import pandas as pd
 from sklearn.compose import ColumnTransformer, make_column_selector
 from sklearn.ensemble import (
     ExtraTreesClassifier,
@@ -326,70 +327,23 @@ def _make_component(registry: dict, name: str, params: dict):
     return registry[name](**params)
 
 
-def build_training_pipeline(config: PipelineConfig):
-    """Build a sklearn Pipeline from a PipelineConfig instance."""
-    cat_encoder = _make_component(
-        CATEGORICAL_ENCODERS,
-        config.categorical_encoder,
-        config.categorical_encoder_params,
-    )
-    num_scaler = _make_component(
-        NUMERICAL_SCALERS,
-        config.numerical_scaler,
-        config.numerical_scaler_params,
-    )
-
-    selector_params = dict(config.feature_selector_params)
-    if config.feature_selector == "selectkbest" and "score_func" not in selector_params:
-        score = f_classif if str(config.task).lower() == "classification" else f_regression
-        selector_params = {**selector_params, "score_func": score}
-    selector = _make_component(FEATURE_SELECTORS, config.feature_selector, selector_params)
-
-    model_params = dict(config.default_model_params)
-    random_state = int(model_params.pop("random_state", 42))
-    n_estimators = int(model_params.pop("n_estimators", 300))
-    model = make_estimator(
-        config.model,
-        task=config.task,
-        random_state=random_state,
-        n_estimators=n_estimators,
-        **model_params,
-    )
-
-    categorical_pipe = Pipeline(
-        [
-            ("imputer", SimpleImputer(strategy=config.categorical_imputer_strategy)),
-            ("encoder", cat_encoder),
-        ]
-    )
-    numerical_pipe = Pipeline(
-        [
-            ("imputer", SimpleImputer(strategy=config.numerical_imputer_strategy)),
-            ("scaler", num_scaler),
-        ]
-    )
-    preprocess = ColumnTransformer(
-        transformers=[
-            ("cat", categorical_pipe, make_column_selector(dtype_include=["object", "category"])),
-            ("num", numerical_pipe, make_column_selector(dtype_exclude=["object", "category"])),
-        ],
-        **config.preprocess_params,
-    )
-    return Pipeline(
-        steps=[
-            ("preprocess", preprocess),
-            ("selector", selector),
-            ("model", model),
-        ],
-        **config.pipeline_params,
-    )
+def split_feature_types(df_frame, feature_list: Sequence[str] | None = None):
+    """Split columns into categorical (incl. bool) and numeric lists."""
+    if feature_list is None:
+        feature_list = list(df_frame.columns)
+    model_features = [feature for feature in feature_list if feature in df_frame.columns]
+    categorical_cols = []
+    numerical_cols = []
+    for feature in model_features:
+        series = df_frame[feature]
+        if pd.api.types.is_bool_dtype(series) or not pd.api.types.is_numeric_dtype(series):
+            categorical_cols.append(feature)
+        else:
+            numerical_cols.append(feature)
+    return model_features, categorical_cols, numerical_cols
 
 
-def build_pipeline_from_modeling_config(
-    modeling_cfg: dict[str, Any],
-    task: str = "regression",
-) -> Pipeline:
-    """Build a training pipeline from a ``modeling`` config section."""
+def _pipeline_config_from_modeling(modeling_cfg: dict[str, Any], task: str) -> PipelineConfig:
     pipeline_cfg_dict: dict[str, Any] = dict(modeling_cfg.get("pipeline", {}))
     model_key = normalize_model_key(
         modeling_cfg.get("model_selection", pipeline_cfg_dict.get("model", "extratrees"))
@@ -408,19 +362,130 @@ def build_pipeline_from_modeling_config(
         default_model_params.setdefault("random_state", modeling_cfg.get("random_state", 42))
         pipeline_cfg_dict["default_model_params"] = default_model_params
 
-    # Drop unknown dataclass fields if present
     allowed = {f.name for f in PipelineConfig.__dataclass_fields__.values()}  # type: ignore[attr-defined]
     filtered = {k: v for k, v in pipeline_cfg_dict.items() if k in allowed}
-    return build_training_pipeline(PipelineConfig(**filtered))
+    return PipelineConfig(**filtered)
+
+
+def build_training_pipeline(
+    config: PipelineConfig,
+    *,
+    categorical_cols: Sequence[str] | None = None,
+    numerical_cols: Sequence[str] | None = None,
+    estimator=None,
+):
+    """Build a sklearn Pipeline from a PipelineConfig instance."""
+    cat_encoder = _make_component(
+        CATEGORICAL_ENCODERS,
+        config.categorical_encoder,
+        config.categorical_encoder_params,
+    )
+    num_scaler = _make_component(
+        NUMERICAL_SCALERS,
+        config.numerical_scaler,
+        config.numerical_scaler_params,
+    )
+
+    selector_params = dict(config.feature_selector_params)
+    if config.feature_selector == "selectkbest" and "score_func" not in selector_params:
+        score = f_classif if str(config.task).lower() == "classification" else f_regression
+        selector_params = {**selector_params, "score_func": score}
+    selector = _make_component(FEATURE_SELECTORS, config.feature_selector, selector_params)
+
+    if estimator is None:
+        model_params = dict(config.default_model_params)
+        random_state = int(model_params.pop("random_state", 42))
+        n_estimators = int(model_params.pop("n_estimators", 300))
+        estimator = make_estimator(
+            config.model,
+            task=config.task,
+            random_state=random_state,
+            n_estimators=n_estimators,
+            **model_params,
+        )
+
+    categorical_pipe = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy=config.categorical_imputer_strategy)),
+            ("encoder", cat_encoder),
+        ]
+    )
+    numerical_pipe = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy=config.numerical_imputer_strategy)),
+            ("scaler", num_scaler),
+        ]
+    )
+
+    explicit_columns = categorical_cols is not None or numerical_cols is not None
+    if explicit_columns:
+        categorical_cols = list(categorical_cols or [])
+        numerical_cols = list(numerical_cols or [])
+        transformers = []
+        if numerical_cols:
+            transformers.append(("num", numerical_pipe, numerical_cols))
+        if categorical_cols:
+            transformers.append(("cat", categorical_pipe, categorical_cols))
+        if not transformers:
+            raise ValueError("No usable features remain after preprocessing.")
+    else:
+        transformers = [
+            (
+                "cat",
+                categorical_pipe,
+                make_column_selector(dtype_include=["object", "category", "bool"]),
+            ),
+            (
+                "num",
+                numerical_pipe,
+                make_column_selector(dtype_exclude=["object", "category", "bool"]),
+            ),
+        ]
+
+    preprocess_params = dict(config.preprocess_params)
+    preprocess_params.setdefault("remainder", "drop")
+    preprocess = ColumnTransformer(transformers=transformers, **preprocess_params)
+    return Pipeline(
+        steps=[
+            ("preprocess", preprocess),
+            ("selector", selector),
+            ("model", estimator),
+        ],
+        **config.pipeline_params,
+    )
+
+
+def build_pipeline_from_modeling_config(
+    modeling_cfg: dict[str, Any],
+    task: str = "regression",
+    *,
+    X=None,
+    categorical_cols: Sequence[str] | None = None,
+    numerical_cols: Sequence[str] | None = None,
+    estimator=None,
+) -> Pipeline:
+    """Build a training pipeline from a ``modeling`` config section."""
+    if X is not None and categorical_cols is None and numerical_cols is None:
+        _, categorical_cols, numerical_cols = split_feature_types(X, list(X.columns))
+    return build_training_pipeline(
+        _pipeline_config_from_modeling(modeling_cfg, task),
+        categorical_cols=categorical_cols,
+        numerical_cols=numerical_cols,
+        estimator=estimator,
+    )
 
 
 def build_model_pipeline(df_frame, feature_list: list[str], modeling_cfg: dict[str, Any]) -> Pipeline:
-    """Backward-compatible wrapper used by existing notebook calls."""
-    _ = df_frame, feature_list
+    """Build a training pipeline, using ``df_frame`` to split feature types when given."""
     task = modeling_cfg.get("task", "regression")
     if str(task).lower() == "auto":
         task = "regression"
-    return build_pipeline_from_modeling_config(modeling_cfg, task=task)
+    kwargs: dict[str, Any] = {}
+    if df_frame is not None:
+        _, cat_cols, num_cols = split_feature_types(df_frame, feature_list)
+        kwargs["categorical_cols"] = cat_cols
+        kwargs["numerical_cols"] = num_cols
+    return build_pipeline_from_modeling_config(modeling_cfg, task=task, **kwargs)
 
 
 def get_hyperparameter_space(config: dict[str, Any], task: str = "regression") -> dict[str, Any]:

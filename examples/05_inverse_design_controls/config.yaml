@@ -1,7 +1,7 @@
 # Inverse-design controls example.
 # Teaches: optimization.search_space, constant_parameters, objectives, mode.
 #
-# Run from repo root (needs ax-platform, already in package deps):
+# Run from repo root (needs: pip install -e ".[opt]"):
 #   python -m run_pipeline --config examples/05_inverse_design_controls/config.yaml --force-retrain
 #
 # Keep n_trials small here so the example finishes quickly.
