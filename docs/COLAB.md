@@ -92,6 +92,7 @@ Fork users: set `REPO_URL` to your fork before cloning.
 
 | Symptom | Fix |
 |---------|-----|
+| `CalledProcessError` / `run_pipeline exited 1` | Scroll **above** that traceback for the pipeline error. Common: `No module named run_pipeline` (re-run bootstrap with `ML_MEM_FORCE_INSTALL=1`); SHAP crash (examples now use `--stage eda,model`). Runtime must be Python **3.11+** (`!python -V`). |
 | `Could not find config.yaml` | Bootstrap did not `cd` to repo root; re-run Colab cell or `%cd /content/ML-MEM-Review` |
 | `ModuleNotFoundError: utl_*` | `pip install -e .` from repo root, or ensure `src/` is on `sys.path` (notebook setup does this) |
 | `requires-python >=3.11` / install fails | Runtime → Change runtime type → pick 3.11+ |

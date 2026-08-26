@@ -152,13 +152,17 @@ def run_shap(config, df_enriched, targets, figures_dir):
         return
 
     for target in targets:
-        shap_values, feature_names, summary_fig, bar_fig = utl_shap.shap_explain_target(
-            target=target,
-            df_enriched=df_enriched,
-            features_to_model=resolve_features_to_model(config, df_enriched),
-            config=config,
-            max_samples=1000,
-        )
+        try:
+            shap_values, feature_names, summary_fig, bar_fig = utl_shap.shap_explain_target(
+                target=target,
+                df_enriched=df_enriched,
+                features_to_model=resolve_features_to_model(config, df_enriched),
+                config=config,
+                max_samples=1000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"SHAP skipped for target {target}: {exc}")
+            continue
         if summary_fig is None or bar_fig is None:
             print(f"SHAP skipped for target: {target}")
             continue
@@ -327,17 +331,23 @@ def run_pipeline(
     if project_root is None and config_path is not None:
         project_root = str(Path(config_path).parent)
 
+    if isinstance(stages, str):
+        if stages == "all":
+            stage_list = STAGES
+        else:
+            stage_list = [part.strip() for part in stages.split(",") if part.strip()]
+    else:
+        stage_list = STAGES if stages == "all" else list(stages)
+    unknown = [part for part in stage_list if part not in STAGES]
+    if unknown:
+        raise ValueError(f"Unknown stage(s) {unknown}. Choose from {STAGES} or 'all'.")
+
     config = load_config(config_path=config_path, project_root=project_root)
     targets = resolve_targets(config)
     figures_dir = get_figures_dir(config)
     os.makedirs(figures_dir, exist_ok=True)
 
     _, df_enriched = load_data(config)
-
-    if isinstance(stages, str):
-        stage_list = STAGES if stages == "all" else [stages]
-    else:
-        stage_list = STAGES if stages == "all" else list(stages)
 
     if "eda" in stage_list:
         run_eda(config, df_enriched, targets, figures_dir)
@@ -369,8 +379,9 @@ def main():
     parser.add_argument(
         "--stage",
         default="all",
-        choices=["all"] + STAGES,
-        help="Which stage(s) to run (default: all)",
+        help="Stage(s) to run: all, or a comma-separated list from "
+        + ", ".join(STAGES)
+        + " (default: all)",
     )
     parser.add_argument(
         "--force-retrain",

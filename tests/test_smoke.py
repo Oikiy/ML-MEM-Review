@@ -58,6 +58,13 @@ def test_example_02_classification_model_stage(tmp_path):
     assert any(models.glob("*label*classifier*.pkl"))
 
 
+def test_comma_separated_stages_are_parsed():
+    from run_pipeline import run_pipeline
+
+    with pytest.raises(ValueError, match="Unknown stage"):
+        run_pipeline(config_path="missing.yaml", stages="eda,not_a_stage")
+
+
 @pytest.mark.smoke
 def test_optimize_skipped_when_not_configured(tmp_path):
     config_path = _prepare_example(tmp_path, "02_classification")

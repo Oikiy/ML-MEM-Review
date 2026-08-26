@@ -187,6 +187,8 @@ def shap_explain_target(
     if is_tree_model(model_key):
         explainer = shap.TreeExplainer(model_step)
         shap_values = explainer.shap_values(X_shap)
+        if isinstance(shap_values, list) and shap_values:
+            shap_values = shap_values[-1]
     else:
         try:
             # Background sample for linear / coefficient-based explainers.
@@ -201,51 +203,54 @@ def shap_explain_target(
             )
             return None, feature_names, None, None
 
-    # SHAP beeswarm: global importance + direction of effect
-    plt.rcParams.update({'font.size': font_size})
-    shap.summary_plot(
-        shap_values,
-        X_shap,
-        feature_names=feature_names,
-        show=False,
-        cmap=summary_cmap,
-        plot_size=fig_size,
-    )
-    summary_fig = plt.gcf()
-    summary_fig.set_size_inches(*fig_size)
-    summary_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
-    plt.title(f"SHAP summary:{target}", fontsize=font_size, fontweight='bold')
-    ax = plt.gca()
-    ax.grid(False)
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(1.5)
-        spine.set_edgecolor('black')
-    summary_fig = plt.gcf()
+    plt.rcParams.update({"font.size": font_size})
+    try:
+        shap.summary_plot(
+            shap_values,
+            X_shap,
+            feature_names=feature_names,
+            show=False,
+            cmap=summary_cmap,
+            plot_size=fig_size,
+        )
+        summary_fig = plt.gcf()
+        summary_fig.set_size_inches(*fig_size)
+        summary_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
+        plt.title(f"SHAP summary:{target}", fontsize=font_size, fontweight="bold")
+        ax = plt.gca()
+        ax.grid(False)
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+            spine.set_edgecolor("black")
+        summary_fig = plt.gcf()
 
-    # SHAP bar chart: mean absolute SHAP magnitude per feature
-    shap.summary_plot(
-        shap_values,
-        X_shap,
-        feature_names=feature_names,
-        plot_type="bar",
-        show=False,
-        plot_size=fig_size,
-        color=bar_color,
-    )
-    bar_fig = plt.gcf()
-    bar_fig.set_size_inches(*fig_size)
-    bar_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
-    ax = plt.gca()
-    ax.grid(False)
-    for patch in ax.patches:
-        patch.set_facecolor(bar_color)
-        patch.set_edgecolor(bar_color)
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_linewidth(1.5)
-        spine.set_edgecolor('black')
-    plt.title(f"SHAP feature importance : {target}", fontsize=font_size, fontweight='bold')
-    bar_fig = plt.gcf()
+        shap.summary_plot(
+            shap_values,
+            X_shap,
+            feature_names=feature_names,
+            plot_type="bar",
+            show=False,
+            plot_size=fig_size,
+            color=bar_color,
+        )
+        bar_fig = plt.gcf()
+        bar_fig.set_size_inches(*fig_size)
+        bar_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
+        ax = plt.gca()
+        ax.grid(False)
+        for patch in ax.patches:
+            patch.set_facecolor(bar_color)
+            patch.set_edgecolor(bar_color)
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+            spine.set_edgecolor("black")
+        plt.title(f"SHAP feature importance : {target}", fontsize=font_size, fontweight="bold")
+        bar_fig = plt.gcf()
+    except Exception as exc:  # noqa: BLE001
+        print(f"SHAP plotting failed for target '{target}': {exc}. Skipping SHAP plots.")
+        plt.close("all")
+        return shap_values, feature_names, None, None
 
     return shap_values, feature_names, summary_fig, bar_fig
