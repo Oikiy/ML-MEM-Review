@@ -15,7 +15,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from utl_config_loader import get_model_dir, load_config
-from utl_modelling import _infer_task, _resolve_model_path
+from utl_modelling import _infer_task, _resolve_model_path, scaled_plot_fonts
 from utl_model_arch import is_tree_model, normalize_model_key
 
 FONT_SIZE = 20
@@ -55,7 +55,7 @@ def shap_explain_target(
     fig_size=None,
  ):
     """
-    Load a saved ExtraTrees pipeline for a given target, rebuild training-like
+    Load a saved model pipeline for a given target, rebuild training-like
     inputs, and generate SHAP summary plots.
 
     Parameters
@@ -65,7 +65,8 @@ def shap_explain_target(
     df_enriched : pandas.DataFrame
         Enriched membrane dataset (after feature_engineering).
     features_to_model : list of str
-        Base feature columns to pass into build_feature_table.
+        Declared model features (background columns still come from the
+        fitted pipeline's ``feature_names_in_``).
     config : dict
         Loaded project configuration dictionary.
         Filename is resolved from modeling.model_filename_pattern and
@@ -94,10 +95,11 @@ def shap_explain_target(
     try:
         import shap
     except Exception as exc:
-        raise ImportError(
-            "SHAP could not be imported. Install with: pip install -e '.[shap]'. "
-            "A broken PyTorch install can also block shap; reinstall shap/torch if needed."
-        ) from exc
+        print(
+            "SHAP could not be imported "
+            f"({exc}). Install with: pip install -e '.[shap]'. Skipping SHAP plots."
+        )
+        return None, [], None, None
 
     print(f"\n=== SHAP interpretation for target: {target} ===")
 
@@ -203,7 +205,15 @@ def shap_explain_target(
             )
             return None, feature_names, None, None
 
-    plt.rcParams.update({"font.size": font_size})
+    n_features = max(len(feature_names), 1)
+    n_show = min(20, n_features)
+    title_fs, label_fs, tick_fs, _ = scaled_plot_fonts(n_show, base=font_size)
+    plot_h = max(float(fig_size[1]) * 0.55, 0.38 * n_show + 2.4)
+    plot_w = max(float(fig_size[0]) * 0.7, 8.0)
+    shap_size = (plot_w, plot_h)
+    left_margin = min(0.46, 0.20 + 0.006 * max((len(str(n)) for n in feature_names), default=8))
+    old_font = plt.rcParams.get("font.size", 10)
+    plt.rcParams.update({"font.size": tick_fs})
     try:
         shap.summary_plot(
             shap_values,
@@ -211,13 +221,16 @@ def shap_explain_target(
             feature_names=feature_names,
             show=False,
             cmap=summary_cmap,
-            plot_size=fig_size,
+            plot_size=shap_size,
+            max_display=n_show,
         )
         summary_fig = plt.gcf()
-        summary_fig.set_size_inches(*fig_size)
-        summary_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
-        plt.title(f"SHAP summary:{target}", fontsize=font_size, fontweight="bold")
+        summary_fig.set_size_inches(*shap_size)
+        summary_fig.subplots_adjust(left=left_margin, right=0.98, top=0.90, bottom=0.12)
+        plt.title(f"SHAP summary: {target}", fontsize=title_fs, fontweight="bold")
         ax = plt.gca()
+        ax.tick_params(axis="both", labelsize=tick_fs)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=label_fs)
         ax.grid(False)
         for spine in ax.spines.values():
             spine.set_visible(True)
@@ -231,13 +244,16 @@ def shap_explain_target(
             feature_names=feature_names,
             plot_type="bar",
             show=False,
-            plot_size=fig_size,
+            plot_size=shap_size,
             color=bar_color,
+            max_display=n_show,
         )
         bar_fig = plt.gcf()
-        bar_fig.set_size_inches(*fig_size)
-        bar_fig.subplots_adjust(left=0.32, right=0.98, top=0.92, bottom=0.12)
+        bar_fig.set_size_inches(*shap_size)
+        bar_fig.subplots_adjust(left=left_margin, right=0.98, top=0.90, bottom=0.12)
         ax = plt.gca()
+        ax.tick_params(axis="both", labelsize=tick_fs)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=label_fs)
         ax.grid(False)
         for patch in ax.patches:
             patch.set_facecolor(bar_color)
@@ -246,11 +262,13 @@ def shap_explain_target(
             spine.set_visible(True)
             spine.set_linewidth(1.5)
             spine.set_edgecolor("black")
-        plt.title(f"SHAP feature importance : {target}", fontsize=font_size, fontweight="bold")
+        plt.title(f"SHAP feature importance: {target}", fontsize=title_fs, fontweight="bold")
         bar_fig = plt.gcf()
     except Exception as exc:  # noqa: BLE001
         print(f"SHAP plotting failed for target '{target}': {exc}. Skipping SHAP plots.")
         plt.close("all")
         return shap_values, feature_names, None, None
+    finally:
+        plt.rcParams.update({"font.size": old_font})
 
     return shap_values, feature_names, summary_fig, bar_fig

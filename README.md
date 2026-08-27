@@ -42,9 +42,10 @@ python -m run_pipeline --config my_project/config.yaml
 ```
 
 That prints a DATASET CHECK report, then trains a model per target and writes
-EDA / parity (or confusion) figures into `outputs/figures/`. SHAP and Ax
-inverse design run when those extras are installed and configured; otherwise
-they are skipped with an install hint. No code edits needed.
+EDA / parity (or confusion) figures into `outputs/figures/`. SHAP is skipped
+if the extra is missing. Inverse design runs when `optimization` is wired to
+`data.targets`; if it is wired but Ax is not installed, the pipeline **errors**
+(`pip install -e ".[opt]"`). No code edits needed.
 
 ## Reusing on a completely different dataset
 
@@ -68,9 +69,10 @@ from `config.yaml`:
 
 - `feature_engineering.lookups` / `synthetic_feature` — merge descriptor
   tables or add equation-derived columns.
-- `optimization` — Bayesian inverse design for **continuous** objectives only
-  (must name columns in `data.targets` that you trained as regressors).
-  Skipped with a clear message when misconfigured or when Ax is unavailable.
+- `optimization` — Bayesian inverse design for **continuous** objectives only.
+  Each objective must point at a `data.targets` column via `model_target`,
+  `original_name`, or `name`. Skipped if that block is missing or miswired.
+  If it is wired and Ax is missing: **error** (`pip install -e ".[opt]"`).
   Not applicable to classification targets.
 
 As a library in your own project:
@@ -86,7 +88,7 @@ config = run_pipeline(
 ## Using the tutorial example (membrane dataset)
 
 `config.yaml` is the pre-filled membrane example (manual feature list, ion
-property lookups, multiobjective search space). `data/` must contain the
+property lookups, multiobjective / Pareto inverse design). `data/` must contain the
 dataset before running. The companion notebook
 `notebooks/Complete_notebook/Ml-MEM-Tut.ipynb` walks through the same pipeline
 cell by cell for teaching.

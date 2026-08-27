@@ -97,7 +97,7 @@ Fork users: set `REPO_URL` to your fork before cloning.
 | Symptom | Fix |
 |---------|-----|
 | `run_pipeline exited 2` / argparse | `--stage` is one token (`eda` or `eda,model`). Example notebooks call `--stage eda` then `--stage model`. Re-run **bootstrap** so the clone matches this notebook. |
-| `CalledProcessError` / `run_pipeline exited 1` | Scroll **above** that traceback for the pipeline error. Common: `No module named run_pipeline` (re-run bootstrap; `PYTHONPATH=src` is set in example run cells). SHAP is skipped if import/torch fails. Runtime must be Python **3.11+** (`!python -V`). |
+| `CalledProcessError` / `run_pipeline exited 1` | Scroll **above** that traceback for the pipeline error. Common: `No module named run_pipeline` (re-run bootstrap; `PYTHONPATH=src` is set in example run cells). SHAP is **skipped** if import/torch fails. If inverse design is in the YAML and Ax is missing, the pipeline **errors** (`pip install -e ".[opt]"`). Runtime must be Python **3.11+** (`!python -V`). |
 | Notebook newer than clone / stale `/content` | Re-run bootstrap (it `git fetch` + `reset --hard` to `origin/main`). If the **notebook file** itself is old, Runtime → Disconnect and delete runtime, then open from GitHub again. |
 | `Could not find config.yaml` | Bootstrap did not `cd` to repo root; re-run Colab cell or `%cd /content/ML-MEM-Review` |
 | `ModuleNotFoundError: utl_*` | `pip install -e .` from repo root, or ensure `src/` is on `sys.path` (notebook setup does this) |

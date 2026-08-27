@@ -24,7 +24,7 @@ from utl_config_loader import get_model_dir, get_optimization_config, load_confi
 from utl_expr import evaluate_arithmetic
 from utl_feateng import feature_engineering
 from utl_fileIO import file_io
-from utl_modelling import _resolve_model_path
+from utl_modelling import _resolve_model_path, scaled_plot_fonts
 
 
 def _ax_client_json_path(client_path: str) -> str:
@@ -399,7 +399,7 @@ def _normalize(value: float, norm_dict: dict, key: str) -> float:
     value : float
         Raw metric value.
     key : str
-        Metric name ('PureWaterPermeability' or 'solute1Rejection').
+        Metric name matching a key in ``norm_dict``.
 
     Returns
     -------
@@ -580,9 +580,9 @@ def _build_optimization_config(
         else:
             objective_terms.append(objective_metric_name)
 
-    if objective_terms:
-        return {"objective": ",".join(objective_terms)}
-    return {"objective": "normPureWaterPermeability,solute1Rejection"}
+    if not objective_terms:
+        raise ValueError("optimization.objectives must define at least one objective.")
+    return {"objective": ",".join(objective_terms)}
 
 
 def _build_multiobjective_thresholds(opt_cfg: dict[str, Any], objective_thresholds=None):
@@ -613,13 +613,11 @@ def _build_multiobjective_thresholds(opt_cfg: dict[str, Any], objective_threshol
 
             thresholds.append(f"{objective_cfg['name']}{threshold_str}")
 
-        if thresholds:
-            return thresholds
-
-        return [
-            "normPureWaterPermeability>=0.0",
-            "solute1Rejection>=0.0",
-        ]
+        if not thresholds:
+            raise ValueError(
+                "optimization.objectives must define names (and optional thresholds)."
+            )
+        return thresholds
     return list(objective_thresholds)
 
 
@@ -1299,8 +1297,7 @@ def summarize_inverse_design_metrics_evolution(
     import matplotlib.pyplot as plt
     import numpy as np
     import textwrap
-    from matplotlib.colors import to_rgb
-    from mpl_toolkits.mplot3d.art3d import Line3D, Poly3DCollection
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
     history_df = prepare_objective_history(
         trial_df=trial_df,
@@ -1351,9 +1348,7 @@ def summarize_inverse_design_metrics_evolution(
 
     default_figure_size = (12, 8)
     if tuple(figure_size) == default_figure_size:
-        dynamic_width = min(18.0, max(12.0, 10.5 + 0.4 * (max_label_lines - 1)))
-        dynamic_height = min(24.0, max(8.5, 4.8 + 0.95 * num_metrics + 0.35 * (max_label_lines - 1)))
-        figure_size = (dynamic_width, dynamic_height)
+        figure_size = (11.5, 7.2)
 
     if y_positions is None:
         base_spacing = max(1.1, 1.0 + 0.15 * max_label_lines + 0.03 * max(0, num_metrics - 4))
@@ -1373,252 +1368,113 @@ def summarize_inverse_design_metrics_evolution(
     if config is None:
         config = load_config()
     plotting_cfg = config.get("plotting", {})
-    if cmap is None:
-        cmap_cfg = plotting_cfg.get("custom_colormap", {})
-        cmap = LinearSegmentedColormap.from_list(
-            cmap_cfg.get("name", "my_palette"),
-            cmap_cfg.get("colors", ["#7FAFD9", "#FFF8EE", "#E38AAA"]),
-        )
-    if isinstance(cmap, str):
-        cmap = plt.get_cmap(cmap)
-    color_positions = np.linspace(0.0, 1.0, len(plot_columns), endpoint=False)
-    colors = [cmap(position) for position in color_positions]
-
-    def darken_color(color, factor=0.6):
-        return tuple(np.clip(np.array(to_rgb(color)) * factor, 0, 1))
-
-    fig = plt.figure(figsize=figure_size)
-    ax = fig.add_subplot(111, projection="3d")
-    ax.computed_zorder = False
-    left_margin = min(0.30, 0.10 + 0.02 * max(0, max_label_lines - 1) + 0.008 * max(0, num_metrics - 5))
-    right_margin = 0.96 if num_metrics >= 8 else 0.94
-    top_margin = 0.90 if num_metrics >= 10 else 0.94
-    fig.subplots_adjust(left=left_margin, right=right_margin, bottom=0.08, top=top_margin)
-
-    positive_layers = []
-    for index, column_name in enumerate(plot_columns):
-        values = pd.to_numeric(plot_df[column_name], errors="coerce").to_numpy(dtype=float)
-        ys = np.full_like(trial_indices, y_positions[index], dtype=float)
-        color = colors[index]
-        outline_color = darken_color(color)
-
-        values_neg = np.minimum(values, 0.0)
-        values_pos = np.maximum(values, 0.0)
-        has_neg = np.any(values_neg < 0)
-        has_pos = np.any(values_pos > 0)
-
-        if has_neg:
-            verts_neg = [[trial_indices[0], ys[0], 0.0]]
-            for point_index in range(len(trial_indices)):
-                verts_neg.append([trial_indices[point_index], ys[point_index], values_neg[point_index]])
-            verts_neg.append([trial_indices[-1], ys[-1], 0.0])
-
-            poly_neg = Poly3DCollection(
-                [verts_neg],
-                alpha=0.3,
-                facecolor=color,
-                edgecolor="black",
-                linewidth=0.5,
-            )
-            poly_neg.set_zorder(1)
-            ax.add_collection3d(poly_neg)
-
-            label_neg = column_name if not has_pos else None
-            ax.plot(
-                trial_indices,
-                ys,
-                values_neg,
-                color=color,
-                linewidth=1,
-                marker="o",
-                markersize=marker_size,
-                markeredgecolor=outline_color,
-                markeredgewidth=0.8,
-                alpha=1.0,
-                label=label_neg,
-                zorder=1,
-            )
-
-        positive_layers.append((column_name, trial_indices.copy(), ys.copy(), values_pos.copy(), color, outline_color, has_pos))
-
-    x_plane = np.linspace(np.min(trial_indices), np.max(trial_indices), 2)
-    y_plane = np.linspace(np.min(y_positions), np.max(y_positions), 2)
-    X_plane, Y_plane = np.meshgrid(x_plane, y_plane)
-    Z_plane = np.zeros_like(X_plane)
-    ax.plot_surface(
-        X_plane,
-        Y_plane,
-        Z_plane,
-        color="#9E9E9E",
-        alpha=0.5,
-        edgecolor="none",
-        linewidth=0,
-        antialiased=False,
-        shade=True,
-        zorder=2,
+    palette = plotting_cfg.get("colors", {}).get(
+        "boxplot",
+        ["#25517e", "#cd7a69", "#4c7da1", "#3d7a5a", "#7FAFD9", "#E38AAA"],
     )
+    if not isinstance(palette, (list, tuple)) or len(palette) < 2:
+        palette = ["#25517e", "#cd7a69", "#4c7da1", "#3d7a5a"]
+    if cmap is not None:
+        if isinstance(cmap, str):
+            cmap = plt.get_cmap(cmap)
+        positions = np.linspace(0.15, 0.85, max(len(plot_columns), 1))
+        colors = [cmap(position) for position in positions]
+    else:
+        colors = [palette[index % len(palette)] for index in range(len(plot_columns))]
 
-    count = len(positive_layers)
-    for column_name, xs_pos, ys_pos, values_pos, color, outline_color, has_pos in positive_layers:
-        if not has_pos:
-            continue
-
-        verts_pos = [[xs_pos[0], ys_pos[0], 0.0]]
-        for point_index in range(len(xs_pos)):
-            verts_pos.append([xs_pos[point_index], ys_pos[point_index], values_pos[point_index]])
-        verts_pos.append([xs_pos[-1], ys_pos[-1], 0.0])
-
-        poly_pos = Poly3DCollection(
-            [verts_pos],
-            alpha=0.5,
-            facecolor=color,
-            edgecolor="black",
-            linewidth=0.5,
-        )
-        poly_pos.set_zorder(3)
-        ax.add_collection3d(poly_pos)
-        count += 1
-        ax.plot(
-            xs_pos,
-            ys_pos,
-            values_pos,
-            color=color,
-            linewidth=1,
-            marker="o",
-            markersize=marker_size,
-            markeredgecolor=outline_color,
-            markeredgewidth=0.8,
-            alpha=1.0,
-            label=column_name,
-            zorder=3 + count,
-        )
+    fig = plt.figure(figsize=figure_size, facecolor="white")
+    ax = fig.add_subplot(111, projection="3d")
+    fig.subplots_adjust(left=0.08, right=0.82, bottom=0.06, top=0.90)
 
     z_values = pd.to_numeric(plot_df[plot_columns].stack(), errors="coerce").to_numpy(dtype=float)
     z_values = z_values[np.isfinite(z_values)]
+    fill_to_zero = False
     if z_values.size > 0:
         z_min = float(np.min(z_values))
         z_max = float(np.max(z_values))
         z_span = max(z_max - z_min, 1e-6)
-        z_pad = 0.08 * z_span
-        ax.set_zlim(z_min - z_pad, z_max + z_pad)
+        z_pad = 0.10 * z_span
+        if z_min >= 0:
+            ax.set_zlim(0.0, z_max + z_pad)
+            fill_to_zero = True
+        elif z_max <= 0:
+            ax.set_zlim(z_min - z_pad, 0.0)
+            fill_to_zero = True
+        else:
+            ax.set_zlim(z_min - z_pad, z_max + z_pad)
 
-    z_label_pad = min(35, 12 + 2 * max_label_lines)
+    for index, column_name in enumerate(plot_columns):
+        values = pd.to_numeric(plot_df[column_name], errors="coerce").to_numpy(dtype=float)
+        ys = np.full_like(trial_indices, y_positions[index], dtype=float)
+        color = colors[index]
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            continue
+        xs = trial_indices[finite]
+        zs = values[finite]
+        ys_f = ys[finite]
+        if fill_to_zero:
+            verts = [[xs[0], ys_f[0], 0.0]]
+            verts.extend([xs[i], ys_f[i], zs[i]] for i in range(len(xs)))
+            verts.append([xs[-1], ys_f[-1], 0.0])
+            ribbon = Poly3DCollection(
+                [verts],
+                alpha=0.28,
+                facecolor=color,
+                edgecolor="none",
+            )
+            ax.add_collection3d(ribbon)
+        ax.plot(
+            xs,
+            ys_f,
+            zs,
+            color=color,
+            linewidth=1.8,
+            marker="o",
+            markersize=max(marker_size, 4.5),
+            markerfacecolor=color,
+            markeredgecolor="white",
+            markeredgewidth=0.6,
+            label=column_name,
+        )
 
-    # Keep axis title slots empty and render labels as in-box 3D annotations instead.
-    ax.set_xlabel("")
-    ax.set_ylabel("")
-    ax.zaxis.set_rotate_label(False)
-    ax.set_zlabel("Objective Value", fontsize=14, labelpad=z_label_pad, color=text_color, fontfamily="Arial", rotation=90)
+    title_fs, label_fs, tick_fs, _ = scaled_plot_fonts(max(num_metrics, 4), base=13)
+    ax.set_xlabel("Trial", fontsize=label_fs, labelpad=10, color=text_color)
+    ax.set_ylabel("Metric", fontsize=label_fs, labelpad=10, color=text_color)
+    ax.set_zlabel("Value", fontsize=label_fs, labelpad=10, color=text_color)
     ax.set_yticks(y_positions)
-    ax.set_yticklabels(wrapped_plot_columns)
-    ax.tick_params(axis="y", pad=2)
-    ax.view_init(elev=elev, azim=azim)
+    ax.set_yticklabels(wrapped_plot_columns, fontsize=tick_fs)
+    if len(trial_indices) > 0:
+        x_max = float(np.nanmax(trial_indices))
+        ax.set_xlim(-0.4, x_max + 0.4)
+        tick_step = 1 if x_max <= 12 else max(2, int(np.ceil(x_max / 8)))
+        ax.set_xticks(np.arange(0, int(x_max) + 1, tick_step))
+    ax.view_init(elev=22 if elev == 15 else elev, azim=azim)
 
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
-    ax.zaxis.pane.fill = False
-    ax.xaxis.pane.set_edgecolor((0, 0, 0, 0))
-    ax.yaxis.pane.set_edgecolor((0, 0, 0, 0))
-    ax.zaxis.pane.set_edgecolor((0, 0, 0, 0))
-    ax.xaxis.pane.set_linewidth(0)
-    ax.yaxis.pane.set_linewidth(0)
-    ax.zaxis.pane.set_linewidth(0)
-    ax.xaxis.line.set_color((0, 0, 0, 0))
-    ax.yaxis.line.set_color((0, 0, 0, 0))
-    ax.zaxis.line.set_color((0, 0, 0, 0))
-    ax.xaxis.line.set_linewidth(1)
-    ax.yaxis.line.set_linewidth(1)
-    ax.zaxis.line.set_linewidth(1)
-
-    ax.tick_params(axis="x", colors=text_color, width=5, pad=0)
-    ax.tick_params(axis="y", colors=text_color, width=5, pad=2)
-    ax.tick_params(axis="z", colors=text_color, width=5, pad=6)
-
-    for label in ax.get_yticklabels():
-        label.set_horizontalalignment("left")
-        label.set_verticalalignment("center")
-        label.set_rotation(0)
-
-    ax.xaxis._axinfo["grid"]["color"] = grid_color
-    ax.yaxis._axinfo["grid"]["color"] = grid_color
-    ax.zaxis._axinfo["grid"]["color"] = grid_color
-    ax.xaxis._axinfo["grid"]["linewidth"] = 1
-    ax.yaxis._axinfo["grid"]["linewidth"] = 1
-    ax.zaxis._axinfo["grid"]["linewidth"] = 1
-    ax.grid(False)
-
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    zlim = ax.get_zlim()
-    x_span = max(xlim[1] - xlim[0], 1e-9)
-    y_span = max(ylim[1] - ylim[0], 1e-9)
-    z_span = max(zlim[1] - zlim[0], 1e-9)
-
-    # Place x/y axis titles inside the 3D box and keep them parallel to their axes.
-    ax.text(
-        xlim[0] + 0.50 * x_span,
-        ylim[0] + 0.01 * y_span,
-        zlim[0] + 0.01 * z_span,
-        "Trial Index",
-        color=text_color,
-        fontsize=12,
-        fontfamily="Arial",
-        ha="center",
-        va="bottom",
-        rotation=45,
-        zdir="z",
-        zorder=1200,
+    pane = (0.96, 0.96, 0.96, 0.9)
+    edge = "#c8c8c8"
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor(pane)
+        axis.pane.set_edgecolor(edge)
+        axis.pane.set_linewidth(0.6)
+        axis.line.set_color("#666666")
+        axis.line.set_linewidth(0.8)
+    ax.tick_params(axis="both", colors=text_color, width=0.6, labelsize=tick_fs, pad=3)
+    grid_rgba = (0.75, 0.75, 0.75, 0.18)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis._axinfo["grid"]["color"] = grid_rgba
+        axis._axinfo["grid"]["linewidth"] = 0.4
+    ax.grid(True, linestyle=":", linewidth=0.4, color=grid_rgba)
+    ax.set_title(title, fontsize=title_fs, pad=12, color=text_color)
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0.0,
+        frameon=True,
+        framealpha=0.95,
+        fontsize=tick_fs,
+        edgecolor="#dddddd",
     )
-    ax.text(
-        xlim[1] - 0.01 * x_span,
-        ylim[0] + 0.5 * y_span,
-        zlim[0] + 0.01 * z_span,
-        "Objective Functions",
-        color=text_color,
-        fontsize=12,
-        fontfamily="Arial",
-        ha="right",
-        va="center",
-        rotation=-45,
-        zdir="z",
-        zorder=1200,
-    )
-
-    front_edges = [
-        ([xlim[0], xlim[1]], [ylim[0], ylim[0]], [zlim[1], zlim[1]]),
-        ([xlim[1], xlim[1]], [ylim[0], ylim[0]], [zlim[0], zlim[1]]),
-        ([xlim[1], xlim[1]], [ylim[0], ylim[1]], [zlim[1], zlim[1]]),
-    ]
-
-    back_edges = [
-        ([xlim[0], xlim[1]], [ylim[1], ylim[1]], [zlim[0], zlim[0]]),
-        ([xlim[0], xlim[1]], [ylim[1], ylim[1]], [zlim[1], zlim[1]]),
-        ([xlim[0], xlim[0]], [ylim[0], ylim[1]], [zlim[0], zlim[0]]),
-        ([xlim[0], xlim[0]], [ylim[0], ylim[1]], [zlim[1], zlim[1]]),
-        ([xlim[0], xlim[0]], [ylim[1], ylim[1]], [zlim[0], zlim[1]]),
-        ([xlim[1], xlim[1]], [ylim[1], ylim[1]], [zlim[0], zlim[1]]),
-        ([xlim[0], xlim[0]], [ylim[0], ylim[0]], [zlim[0], zlim[1]]),
-        ([xlim[1], xlim[1]], [ylim[0], ylim[1]], [zlim[0], zlim[0]]),
-        ([xlim[0], xlim[1]], [ylim[0], ylim[0]], [zlim[0], zlim[0]]),
-    ]
-
-    for edge in back_edges:
-        line = Line3D(edge[0], edge[1], edge[2], color=line_color, linewidth=1.2, alpha=1.0, zorder=0)
-        line.set_clip_on(False)
-        ax.add_line(line)
-
-    for edge in front_edges:
-        line = Line3D(edge[0], edge[1], edge[2], color=line_color, linewidth=1.2, alpha=0.5, zorder=1000)
-        line.set_clip_on(False)
-        ax.add_line(line)
-
-    title_pad = 18 + 2 * max(0, max_label_lines - 1)
-    ax.set_title(title, pad=title_pad)
-
-    legend_kwargs = {}
-    if num_metrics >= 8:
-        legend_kwargs = {"bbox_to_anchor": (1.02, 1.0), "borderaxespad": 0.0}
-    ax.legend(loc="upper left", fontsize=14, framealpha=0.9, prop={"family": "Arial"}, **legend_kwargs)
 
     if output_dir is not None:
         fig.savefig(os.path.join(output_dir, save_name), dpi=300, bbox_inches="tight")
@@ -1941,8 +1797,8 @@ def plot_objective_response_maps(
     y_col: str,
     z_col: str,
     frontier_df: pd.DataFrame | None = None,
-    grid_size: int = 100,
-    smoothing: float = 0.0001,
+    grid_size: int = 50,
+    smoothing: float = 0.05,
     kernel: str = "thin_plate_spline",
     y_padding: float = 0.0,
     surface_cmap: str = "viridis",
@@ -2079,17 +1935,45 @@ def plot_inverse_design_surface(
     import matplotlib.pyplot as plt
     import numpy as np
 
-    fig = plt.figure(figsize=fig_size)
+    X = surface_data["X"]
+    Y = surface_data["Y"]
+    Z = np.asarray(surface_data["Z"], dtype=float)
+    n_grid = max(int(X.shape[0]), 1)
+    stride = max(1, n_grid // 32)
+    title_fs, label_fs, tick_fs, _ = scaled_plot_fonts(6, base=13)
+
+    fig = plt.figure(figsize=fig_size, facecolor="white")
     ax = fig.add_subplot(111, projection="3d")
+    fig.subplots_adjust(left=0.06, right=0.88, bottom=0.06, top=0.92)
+
+    z_min = float(np.nanmin(Z))
+    z_max = float(np.nanmax(Z))
+    z_pad = 0.08 * max(z_max - z_min, 1e-6)
+
+    surf = ax.plot_surface(
+        X,
+        Y,
+        Z,
+        cmap=cmap,
+        linewidth=0,
+        antialiased=True,
+        alpha=0.90,
+        rstride=stride,
+        cstride=stride,
+        shade=True,
+    )
     ax.scatter(
         surface_data["x"],
         surface_data["y"],
         surface_data["z"],
         c=trial_color,
+        s=max(marker_size * 0.35, 32),
         marker="o",
+        depthshade=False,
+        edgecolors="white",
+        linewidths=0.7,
         label="Trials",
-        edgecolors=[_darker_color(trial_color)],
-        linewidths=0.9,
+        zorder=5,
     )
 
     if frontier_df is not None and not frontier_df.empty:
@@ -2105,33 +1989,36 @@ def plot_inverse_design_surface(
             frontier_clean[z_col],
             c=frontier_color,
             marker="^",
-            s=marker_size,
+            s=max(marker_size * 0.4, 40),
             label="Pareto Frontier",
-            edgecolors=[_darker_color(frontier_color)],
-            linewidths=0.9,
+            edgecolors="white",
+            linewidths=0.7,
+            depthshade=False,
+            zorder=6,
         )
 
-    surf = ax.plot_surface(
-        surface_data["X"],
-        surface_data["Y"],
-        surface_data["Z"],
-        cmap=cmap,
-        edgecolor="none",
-        alpha=0.8,
-        rstride=1,
-        cstride=1,
-        shade=True,
-        antialiased=True,
-    )
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
-    ax.set_zlabel(z_col)
+    ax.set_xlabel(x_col, fontsize=label_fs, labelpad=8)
+    ax.set_ylabel(y_col, fontsize=label_fs, labelpad=8)
+    ax.set_zlabel(z_col, fontsize=label_fs, labelpad=8)
     ax.set_xlim([surface_data["x_min"], surface_data["x_max"]])
     ax.set_ylim([surface_data["y_min"] - y_padding, surface_data["y_max"]])
-    ax.set_zlim([float(surface_data["z"].min()), float(surface_data["z"].max())])
-    ax.view_init(elev=elev, azim=azim)
-    ax.legend(loc="upper left", fontsize=12)
-    fig.colorbar(surf, ax=ax, shrink=0.5, pad=0.12, aspect=10, label=z_col)
+    ax.set_zlim(z_min - z_pad, z_max + z_pad)
+    ax.view_init(elev=22 if elev == 30 else elev, azim=azim)
+    pane = (0.96, 0.96, 0.96, 0.9)
+    edge = "#c8c8c8"
+    grid_rgba = (0.75, 0.75, 0.75, 0.18)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor(pane)
+        axis.pane.set_edgecolor(edge)
+        axis.pane.set_linewidth(0.6)
+        axis.line.set_color("#666666")
+        axis.line.set_linewidth(0.8)
+        axis._axinfo["grid"]["color"] = grid_rgba
+        axis._axinfo["grid"]["linewidth"] = 0.4
+    ax.tick_params(axis="both", labelsize=tick_fs, width=0.6, pad=3, colors="#222222")
+    ax.grid(True, linestyle=":", linewidth=0.4, color=grid_rgba)
+    ax.legend(loc="upper left", fontsize=tick_fs, framealpha=0.95, edgecolor="#dddddd")
+    fig.colorbar(surf, ax=ax, shrink=0.55, pad=0.08, aspect=12, label=z_col)
     return fig, ax
 
 
@@ -2151,7 +2038,7 @@ def plot_inverse_design_contour(
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=fig_size)
-    contour = ax.contourf(surface_data["X"], surface_data["Y"], surface_data["Z"], levels=50, cmap=cmap)
+    contour = ax.contourf(surface_data["X"], surface_data["Y"], surface_data["Z"], levels=14, cmap=cmap)
     fig.colorbar(contour, label=z_col)
     ax.scatter(
         surface_data["x"],
@@ -2353,6 +2240,9 @@ def plot_ax_results(
             fig_size=figure_size,
         )
         output["figures"].update(figures)
+        summary_fig = figures.get(aggregate_name) or next(iter(figures.values()), None)
+        output["figures"]["summary_figure"] = summary_fig
+        output["summary"] = {"figure": summary_fig}
 
     elif n_objectives >= 2:
         summary = summarize_inverse_design_metrics_evolution(

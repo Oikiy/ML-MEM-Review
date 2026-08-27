@@ -1,3 +1,4 @@
+import matplotlib
 import numpy as np
 import pandas as pd
 import pytest
@@ -7,6 +8,7 @@ from utl_Ax import (
     _build_multiobjective_thresholds,
     _normalize,
     _normalize_optimization_mode,
+    plot_ax_results,
     prepare_objective_history,
 )
 
@@ -51,6 +53,24 @@ def test_prepare_objective_history_sum():
         trial_df, ["o1", "o2"], aggregate_name="obj_sum"
     )
     assert list(history["obj_sum"]) == pytest.approx([1.0, 0.9, 1.1])
+
+
+def test_plot_ax_results_one_objective_sets_summary_figure():
+    matplotlib.use("Agg")
+    config = {
+        "optimization": {
+            "mode": "scalarized",
+            "objectives": [
+                {"name": "kpi", "original_name": "kpi", "direction": "maximize"}
+            ],
+            "inverse_design": {"aggregate_name": "objective_sum"},
+        },
+        "_project_root": ".",
+    }
+    trial_df = pd.DataFrame({"trial_index": [0, 1, 2], "kpi": [0.1, 0.4, 0.3]})
+    viz = plot_ax_results(trial_df, config=config)
+    assert viz["figures"].get("summary_figure") is not None
+    assert viz.get("summary", {}).get("figure") is not None
 
 
 def test_prepare_objective_history_minimize_flips_sign():

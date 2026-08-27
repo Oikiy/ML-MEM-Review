@@ -115,7 +115,7 @@ feature_engineering:
 #  EDA / DATA-ANALYSIS PLOTS
 # ---------------------------------------------------------------------
 data_analysis:
-  correlation_thresholds: [0, 0.1]
+  correlation_thresholds: [0.1]
   pearson_heatmap_show_annotations: true
 
 # ---------------------------------------------------------------------
@@ -171,6 +171,9 @@ modeling:
 #  mode: "scalarized" (single score) or "multiobjective" (Pareto frontier)
 # ---------------------------------------------------------------------
 optimization:
+  # Tutorial default: Pareto search over permeability and rejection.
+  # For one weighted score instead, set mode: "scalarized" and use
+  # scalarized_objective.equation below.
   mode: "multiobjective"
   sobol_init: 5
   n_trials: 100

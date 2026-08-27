@@ -9,7 +9,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from run_pipeline import STAGES, normalize_stages, run_pipeline
+from run_pipeline import (
+    STAGES,
+    _optimization_is_configured,
+    normalize_stages,
+    run_optimization,
+    run_pipeline,
+)
+from utl_config_loader import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,3 +105,36 @@ def test_optimize_skipped_when_not_configured(tmp_path):
     figures = Path(config["_project_root"]) / "outputs" / "figures"
     assert not (figures / "inverse_design_summary.png").exists()
     assert config["optimization"].get("objectives") in (None, [])
+
+
+def test_root_config_optimization_is_wired():
+    config = load_config(config_path=str(ROOT / "config.yaml"), project_root=str(ROOT))
+    assert _optimization_is_configured(config)
+
+
+def test_example_05_optimization_is_wired():
+    config = load_config(
+        config_path=str(ROOT / "examples" / "05_inverse_design_controls" / "config.yaml"),
+        project_root=str(ROOT / "examples" / "05_inverse_design_controls"),
+    )
+    assert _optimization_is_configured(config)
+
+
+def test_run_optimization_raises_when_ax_missing(monkeypatch):
+    import builtins
+    import sys
+
+    config = load_config(config_path=str(ROOT / "config.yaml"), project_root=str(ROOT))
+    for key in list(sys.modules):
+        if key == "ax" or key.startswith("ax."):
+            monkeypatch.delitem(sys.modules, key, raising=False)
+    real_import = builtins.__import__
+
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "ax" or name.startswith("ax."):
+            raise ImportError("ax missing for test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    with pytest.raises(ImportError, match=r"\[opt\]"):
+        run_optimization(config, figures_dir=str(ROOT / "outputs" / "figures"), force_retrain=True)

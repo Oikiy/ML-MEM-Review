@@ -7,6 +7,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.ticker import MaxNLocator
 
 from utl_config_loader import load_config
+from utl_modelling import _infer_task, scaled_plot_fonts
 
 FONT_SIZE = 20
 
@@ -25,11 +26,7 @@ def _target_is_classification(
     task = "auto"
     if config is not None:
         task = config.get("modeling", {}).get("task", "auto")
-    if task == "classification":
-        return True
-    if task == "regression":
-        return False
-    return not pd.api.types.is_numeric_dtype(series)
+    return _infer_task(task, None, series) == "classification"
 
 
 def _build_custom_cmap(plotting_cfg: dict[str, Any]) -> LinearSegmentedColormap:
@@ -89,7 +86,9 @@ def plot_target_distributions(
     axes : np.ndarray of matplotlib.axes.Axes
     """
     plotting_cfg = _get_plotting_cfg(config)
-    font_size = plotting_cfg.get("font_size", FONT_SIZE)
+    base_font = plotting_cfg.get("font_size", FONT_SIZE)
+    n_targets = len(df[target_columns].columns)
+    title_fs, label_fs, tick_fs, _ = scaled_plot_fonts(max(n_targets, 4), base=base_font)
     plot_colors = plotting_cfg.get("colors", {})
 
     # Extract target data
@@ -131,13 +130,13 @@ def plot_target_distributions(
             ax.set_xticks(xpos)
             ax.set_xticklabels(list(counts.index))
             ax.set_ylabel(
-                "count", fontsize=font_size, fontweight="bold", color="#252525"
+                "count", fontsize=label_fs, fontweight="bold", color="#252525"
             )
             ax.set_xlabel(
-                column, fontsize=font_size, fontweight="bold", color="#252525"
+                column, fontsize=label_fs, fontweight="bold", color="#252525"
             )
             ax.tick_params(
-                axis="both", which="major", labelsize=font_size, colors="#252525"
+                axis="both", which="major", labelsize=tick_fs, colors="#252525"
             )
             ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=5))
         else:
@@ -193,11 +192,11 @@ def plot_target_distributions(
 
             ax.set_xlim(*xlim)
             ax.set_ylabel(
-                column, fontsize=font_size, fontweight="bold", color="#252525"
+                column, fontsize=label_fs, fontweight="bold", color="#252525"
             )
-            ax.set_xlabel("", fontsize=font_size)
+            ax.set_xlabel("", fontsize=label_fs)
             ax.tick_params(
-                axis="both", which="major", labelsize=font_size, colors="#252525"
+                axis="both", which="major", labelsize=tick_fs, colors="#252525"
             )
             ax.set_xticks([])
             ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
@@ -283,10 +282,14 @@ def compute_and_plot_pearson_heatmap(
     corr_for_plot = corr_matrix.copy()
     mask = corr_for_plot.abs() <= float(threshold)
     n_cols = max(1, len(corr_for_plot.columns))
-    annot_font_size = min(font_size, max(6, int(240 / n_cols)))
+    title_fs, label_fs, tick_fs, annot_fs = scaled_plot_fonts(n_cols, base=font_size)
     if show_annotations is None:
-        # Default to showing annotations unless explicitly disabled in config.
         show_annotations = bool(data_analysis_cfg.get("pearson_heatmap_show_annotations", True))
+        if n_cols > 18:
+            show_annotations = False
+    if n_cols > 8:
+        side = min(22.0, max(float(fig_size[0]), 0.38 * n_cols + 4.5))
+        fig_size = (side, side * 0.88)
 
     fig, ax = plt.subplots(figsize=fig_size)
     hm = sns.heatmap(
@@ -294,39 +297,37 @@ def compute_and_plot_pearson_heatmap(
         mask=mask,
         annot=bool(show_annotations),
         fmt=".2f",
-        annot_kws={"size": annot_font_size, "color": "black"},
+        annot_kws={"size": annot_fs, "color": "black"},
         cmap=_build_custom_cmap(plotting_cfg),
         center=0,
         cbar_kws={"shrink": .8},
         square=True,
         linewidths=.5,
-        linecolor='black',
+        linecolor="black",
         ax=ax,
     )
-    
-    ax.set_xticklabels(ax.get_xticklabels(), fontsize=font_size, rotation=45, ha='right', fontfamily='Arial')
-    ax.set_yticklabels(ax.get_yticklabels(), fontsize=font_size, rotation=0, fontfamily='Arial')
 
-    # Remove grid and tick marks
+    ax.set_xticklabels(ax.get_xticklabels(), fontsize=tick_fs, rotation=45, ha="right")
+    ax.set_yticklabels(ax.get_yticklabels(), fontsize=tick_fs, rotation=0)
     ax.grid(False)
-    ax.tick_params(which='both', length=0)
+    ax.tick_params(which="both", length=0)
 
-    # Thicken the outer frame
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(3)
-        spine.set_edgecolor('black')
+        spine.set_linewidth(1.5)
+        spine.set_edgecolor("black")
 
-    # Match colorbar style used in ellipse heatmap
     cbar = hm.collections[0].colorbar
-    cbar.set_label('Correlation', fontsize=font_size, fontfamily='Arial')
-    cbar.ax.tick_params(labelsize=font_size)
-    for label in cbar.ax.get_yticklabels():
-        label.set_fontfamily('Arial')
-    cbar.outline.set_linewidth(3)
-    cbar.outline.set_edgecolor('black')
+    cbar.set_label("Correlation", fontsize=label_fs)
+    cbar.ax.tick_params(labelsize=tick_fs)
+    cbar.outline.set_linewidth(1.5)
+    cbar.outline.set_edgecolor("black")
 
-    plt.title(f'Pairwise Pearson Correlation Heatmap > {threshold}', fontsize=font_size, fontfamily='Arial', fontweight='bold')
+    plt.title(
+        f"Pairwise Pearson Correlation Heatmap > {threshold}",
+        fontsize=title_fs,
+        fontweight="bold",
+    )
     plt.tight_layout()
     fig = plt.gcf()
     # Return (corr_matrix, fig). Callers that only need the matrix can unpack: corr, _ = ...

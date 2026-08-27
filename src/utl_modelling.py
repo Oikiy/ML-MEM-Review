@@ -53,6 +53,16 @@ RANDOM_STATE = 42
 FONT_SIZE = 20
 
 
+def scaled_plot_fonts(n_items, base=20):
+    n = max(int(n_items), 1)
+    scale = min(1.0, (8.0 / n) ** 0.45)
+    title = max(9, int(round(base * scale)))
+    label = max(8, int(round(base * 0.9 * scale)))
+    tick = max(6, int(round(base * 0.72 * scale)))
+    annot = max(5, int(round(base * 0.5 * scale)))
+    return title, label, tick, annot
+
+
 def _build_feature_table(
     df_raw: pd.DataFrame,
     features_to_model: list,
@@ -497,8 +507,6 @@ def train_model(
         joblib.dump(pipe, model_path)
         print(f"Model saved to: {model_path}")
 
-    # Metrics are printed once by evaluate_and_plot_results / evaluate_and_plot_parity.
-    # Keep the historical 5-tuple return for the teaching notebook.
     return pipe, X_train, X_test, y_train, y_test
 
 
@@ -545,35 +553,6 @@ def evaluate_and_plot_results(
     return fig, resolved_task
 
 
-def evaluate_and_plot_parity(
-    target,
-    y_train,
-    y_pred_train,
-    y_test,
-    y_pred_test,
-    fig_size=(10, 8),
-    metrics_fn=None,
-    config=None,
-    task="auto",
-):
-    """Backward-compatible entry point; dispatches on task and returns the figure."""
-    if metrics_fn is classification_metrics:
-        task = "classification"
-    elif metrics_fn is regression_metrics:
-        task = "regression"
-    fig, _ = evaluate_and_plot_results(
-        target=target,
-        y_train=y_train,
-        y_pred_train=y_pred_train,
-        y_test=y_test,
-        y_pred_test=y_pred_test,
-        task=task,
-        fig_size=fig_size,
-        config=config,
-    )
-    return fig
-
-
 def _plot_parity(
     target,
     y_train,
@@ -585,6 +564,9 @@ def _plot_parity(
 ):
     plotting_cfg = config.get("plotting", {}) if config is not None else {}
     font_size = plotting_cfg.get("font_size", FONT_SIZE)
+    title_fs, label_fs, tick_fs, annot_fs = scaled_plot_fonts(
+        max(6, len(str(target)) // 4), base=font_size
+    )
     colors = plotting_cfg.get("custom_colormap", {})
     train_color = colors.get("colors", ["#8fbce3"])[0]
     test_color = colors.get("colors", ["#e38f8f"])[-1]
@@ -596,9 +578,9 @@ def _plot_parity(
     lo = min(min(y_test), min(y_train))
     hi = max(max(y_test), max(y_train))
     ax.plot([lo, hi], [lo, hi], "--", color="gray")
-    ax.set_xlabel("True Values", fontsize=font_size)
-    ax.set_ylabel("Predictions", fontsize=font_size)
-    ax.set_title(f"Parity Plot for {target}", fontsize=font_size, fontweight="bold")
+    ax.set_xlabel("True Values", fontsize=label_fs)
+    ax.set_ylabel("Predictions", fontsize=label_fs)
+    ax.set_title(f"Parity Plot for {target}", fontsize=title_fs, fontweight="bold")
 
     r2_train, rmse_train, _ = regression_metrics(y_train, y_pred_train, label="Train", verbose=False)
     r2_test, rmse_test, _ = regression_metrics(y_test, y_pred_test, label="Test", verbose=False)
@@ -608,7 +590,7 @@ def _plot_parity(
         xycoords="axes fraction",
         ha="right",
         va="top",
-        fontsize=font_size,
+        fontsize=annot_fs,
         color=annotation_color,
     )
     ax.annotate(
@@ -617,7 +599,7 @@ def _plot_parity(
         xycoords="axes fraction",
         ha="right",
         va="bottom",
-        fontsize=font_size,
+        fontsize=annot_fs,
         color=test_color,
     )
     ax.grid(False)
@@ -627,7 +609,7 @@ def _plot_parity(
         direction="out",
         length=6,
         width=1.5,
-        labelsize=font_size,
+        labelsize=tick_fs,
         colors="black",
         bottom=True,
         top=False,
@@ -669,14 +651,17 @@ def _plot_confusion_matrices(
     ):
         matrix = confusion_matrix(y_true, y_pred, labels=labels)
         im = ax.imshow(matrix, interpolation="nearest", cmap="Blues")
-        ax.set_title(f"{title} confusion — {target}", fontsize=font_size, fontweight="bold")
+        title_fs, label_fs, tick_fs, annot_fs = scaled_plot_fonts(
+            max(len(labels), 4), base=font_size
+        )
+        ax.set_title(f"{title} confusion — {target}", fontsize=title_fs, fontweight="bold")
         tick_marks = np.arange(len(labels))
         ax.set_xticks(tick_marks)
         ax.set_yticks(tick_marks)
-        ax.set_xticklabels([str(label) for label in labels], fontsize=max(8, font_size - 6))
-        ax.set_yticklabels([str(label) for label in labels], fontsize=max(8, font_size - 6))
-        ax.set_xlabel("Predicted", fontsize=font_size)
-        ax.set_ylabel("True", fontsize=font_size)
+        ax.set_xticklabels([str(label) for label in labels], fontsize=tick_fs)
+        ax.set_yticklabels([str(label) for label in labels], fontsize=tick_fs)
+        ax.set_xlabel("Predicted", fontsize=label_fs)
+        ax.set_ylabel("True", fontsize=label_fs)
         thresh = matrix.max() / 2.0 if matrix.size else 0
         for i in range(matrix.shape[0]):
             for j in range(matrix.shape[1]):
@@ -687,7 +672,7 @@ def _plot_confusion_matrices(
                     ha="center",
                     va="center",
                     color="white" if matrix[i, j] > thresh else "black",
-                    fontsize=max(8, font_size - 4),
+                    fontsize=annot_fs,
                 )
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()

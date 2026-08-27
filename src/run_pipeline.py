@@ -213,8 +213,12 @@ def _optimization_is_configured(config) -> bool:
     except ValueError:
         return False
     for objective_cfg in opt_cfg.get("objectives", []) or []:
-        metric_key = objective_cfg.get("original_name") or objective_cfg.get("name")
-        if metric_key not in configured_targets:
+        aliases = [
+            objective_cfg.get("model_target"),
+            objective_cfg.get("original_name"),
+            objective_cfg.get("name"),
+        ]
+        if not any(str(alias) in configured_targets for alias in aliases if alias):
             return False
     return True
 
@@ -224,8 +228,8 @@ def run_optimization(config, figures_dir, force_retrain, trial_error=0.01):
     if not _optimization_is_configured(config):
         print(
             "Skipping inverse design: add optimization.objectives and "
-            "optimization.search_space to your config (objectives must name "
-            "columns in data.targets) to enable it."
+            "optimization.search_space to your config (each objective must "
+            "name a data.targets column via model_target, original_name, or name)."
         )
         return
 

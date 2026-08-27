@@ -7,8 +7,17 @@ from utl_modelling import (
     _resolve_model_path,
     _safe_target,
     _task_to_filename_label,
+    scaled_plot_fonts,
     train_model,
 )
+
+
+def test_scaled_plot_fonts_shrinks_with_more_items():
+    title_few, _, tick_few, _ = scaled_plot_fonts(4, base=20)
+    title_many, _, tick_many, _ = scaled_plot_fonts(24, base=20)
+    assert title_few >= title_many
+    assert tick_few >= tick_many
+    assert tick_many >= 6
 
 
 def test_task_to_filename_label():

@@ -42,8 +42,9 @@ modeling:
 # INVERSE DESIGN (Ax) — edit this block to control the search
 # ---------------------------------------------------------------------
 optimization:
-  # "scalarized" = one weighted score (simplest to start)
-  # "multiobjective" = Pareto frontier (uncomment objectives thresholds below)
+  # "scalarized" = one weighted score (this example; fastest demo)
+  # "multiobjective" = true Pareto frontier (uncomment each objective's
+  # threshold below). The full tutorial notebook uses multiobjective.
   mode: "scalarized"
 
   sobol_init: 4          # random warm-start trials
