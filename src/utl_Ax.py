@@ -849,7 +849,7 @@ def run_ax_optimization(
         raise ImportError(
             "Ax client is unavailable. This is commonly caused by an incompatible or broken "
             "PyTorch/Ax/Botorch installation in the active environment. Reinstall those "
-            "packages before running inverse design (Section 6)."
+            "packages before running inverse design (paper Step 7)."
         )
 
     if save_every_trials is not None:

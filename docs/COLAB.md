@@ -7,7 +7,7 @@ cloning the full repository.
 
 - Python **3.11+** Colab runtime (check with `!python -V`)
 - Network access to install PyTorch / Ax / BoTorch (first install is slow)
-- Prefer a longer session for inverse design (example 05 and notebook §6)
+- Prefer a longer session for inverse design (example 05 and tutorial Step 7)
 
 Open-in-Colab badge (replace branch if needed):
 
@@ -21,7 +21,7 @@ Open-in-Colab badge (replace branch if needed):
    Colab → *GitHub* → `Oikiy/ML-MEM-Review` →  
    `notebooks/Complete_notebook/Ml-MEM-Tut.ipynb`.
 2. Runtime → **Change runtime type** → Python 3.11+ (GPU optional).
-3. Run the **Google Colab bootstrap** cell near the top (Section 0).  
+3. Run the **Google Colab bootstrap** cell near the top (Setup).  
    It will:
    - detect Colab
    - clone the repo if you only opened the `.ipynb` from GitHub
@@ -37,7 +37,7 @@ clone under `/content/ML-MEM-Review` and reinstalls only when `HEAD` changed.
 That `reset --hard` **discards local edits** in the clone; set
 `ML_MEM_SKIP_PULL=1` to keep them, or `ML_MEM_FORCE_INSTALL=1` to reinstall.
 
-**Ax / inverse design:** Sections 1–5 work with the core install. Section 6 needs
+**Ax / inverse design:** Steps 2–6 work with the core install. Step 7 needs
 `pip install -e ".[all]"` (or at least `".[opt]"`) for `ax-platform` + `botorch`
 + `torch`. If Ax import fails, re-run bootstrap or:
 
