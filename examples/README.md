@@ -1,7 +1,9 @@
 # Examples gallery
 
 Short, self-contained recipes that show how to drive **ML-MEM** from
-`config.yaml` only. The full membrane teaching notebook remains the paper
+`config.yaml` only. These recipes correspond to the paper’s **Steps 4–7** (FE/EDA, surrogate, optional SHAP, optional Ax), not lab Steps 8–9. The teaching notebook numbers all nine steps and discusses 1–3 and 8–9.
+
+The full membrane teaching notebook remains the paper
 tutorial:
 
 `notebooks/Complete_notebook/Ml-MEM-Tut.ipynb`

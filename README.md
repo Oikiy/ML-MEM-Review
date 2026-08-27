@@ -7,6 +7,8 @@ The same package runs on **any** tabular ML dataset — the membrane
 recipe search space, feature lookups, and tutorial notebook are provided as
 pre-filled examples, not hard requirements.
 
+**Nine-step paper vs this repo.** The review uses a closed loop (1 objectives → 2 schema → 3 inspect → 4 FE/EDA → 5 surrogate → 6 SHAP → 7 inverse design → 8 lab validate → 9 refine). This repository implements the **tabular core, Steps 4–7**. Steps 1–3 and 8–9 are discussed in the teaching notebook; they are not wet-lab automation.
+
 **Scope note:** training and evaluation support both **regression** and
 **classification**. The Ax **inverse-design** stage is intentionally for
 **continuous (regression) targets only** — that matches the membrane tutorial
